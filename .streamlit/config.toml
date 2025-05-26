@@ -1,0 +1,9 @@
+[global]
+developmentMode = false
+
+[server]
+runOnSave = false
+allowRunOnSave = false
+
+[browser]
+gatherUsageStats = false 

@@ -1,0 +1,12 @@
+streamlit
+cohere
+shodan
+vt-py
+abuseipdb-wrapper
+requests
+urllib3
+python-dotenv
+certifi
+charset-normalizer
+idna
+packaging

@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-osint-security-analyzer"
+authors = [
+    {name = "Matthew Frazer"},
+]
+description = "AI-Powered Autonomous OSINT Investigation Platform with Complexity-Based Analysis"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators", 
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+keywords = ["osint", "security", "cybersecurity", "threat-intelligence", "ai-agent", "cohere", "complexity-analysis", "streamlit"]
+dependencies = [
+    "streamlit",
+    "cohere",
+    "shodan",
+    "vt-py",
+    "abuseipdb-wrapper",
+    "requests",
+    "python-dotenv",
+    "packaging",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "flake8",
+    "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer"
+Repository = "https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer"
+Issues = "https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer/issues"
+Documentation = "https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer#readme"
+
+[project.scripts]
+ai-osint-analyzer = "app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+exclude = ["tests*", "docs*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true 

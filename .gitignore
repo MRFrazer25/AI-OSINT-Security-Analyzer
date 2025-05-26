@@ -1,0 +1,71 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+.ENV/
+
+# IDE and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+logs/
+*.tmp
+*.bak
+*.backup
+
+# API Keys and credentials
+config.ini
+credentials.json
+*.key
+*.pem
+api_keys.txt
+secrets.json
+
+# Test coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Documentation build
+docs/_build/
+site/
