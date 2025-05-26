@@ -13,17 +13,20 @@ def sanitize_ai_report(content):
     if not isinstance(content, str):
         return str(content)
     
-    # Remove script tags and their content completely
-    content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    # Import html for secure escaping
+    import html
     
-    # Remove any onclick, onload, onerror and other event handlers
-    content = re.sub(r'\s*on\w+\s*=\s*["\'][^"\']*["\']', '', content, flags=re.IGNORECASE)
+    # First escape all HTML to prevent XSS, then selectively allow safe formatting
+    content = html.escape(content)
     
-    # Remove javascript: links
-    content = re.sub(r'javascript:[^"\']*', '', content, flags=re.IGNORECASE)
-    
-    # Remove potentially dangerous attributes (keeping basic formatting)
-    content = re.sub(r'\s*(?:style|class)\s*=\s*["\'][^"\']*["\']', '', content, flags=re.IGNORECASE)
+    # Allow safe HTML tags for basic formatting
+    safe_tags = ['b', 'strong', 'i', 'em', 'u', 'br', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li']
+    for tag in safe_tags:
+        # Re-enable safe opening tags
+        content = content.replace(f'&lt;{tag}&gt;', f'<{tag}>')
+        content = content.replace(f'&lt;/{tag}&gt;', f'</{tag}>')
+        # Also handle tags with simple attributes (no values)
+        content = re.sub(f'&lt;{tag}\\s+[^&]*&gt;', lambda m: m.group(0).replace('&lt;', '<').replace('&gt;', '>'), content)
     
     return content
 
