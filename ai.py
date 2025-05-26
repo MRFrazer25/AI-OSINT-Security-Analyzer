@@ -449,8 +449,10 @@ def osint_cve_search(search_term: str, result_limit: int = 10, reference_limit: 
                 if response.status_code == 200:
                     data = response.json()
                     
-                    # Handle different API response formats
-                    if "nvd.nist.gov" in url:
+                    # Handle different API response formats - properly validate domain
+                    from urllib.parse import urlparse
+                    parsed_url = urlparse(url)
+                    if parsed_url.netloc == "services.nvd.nist.gov":
                         # NVD API format
                         vulnerabilities = data.get("vulnerabilities", [])
                         if vulnerabilities:
