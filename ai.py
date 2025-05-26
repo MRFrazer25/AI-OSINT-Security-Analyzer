@@ -93,7 +93,21 @@ def sanitize_input(user_input):
     """Sanitize user input to prevent injection attacks."""
     if not user_input or not isinstance(user_input, str):
         return ""
-    sanitized = re.sub(r'[<>;"\'\\]', '', user_input.strip())
+    # Use proper input validation
+    user_input = user_input.strip()
+    
+    # Block dangerous URL schemes that can execute code
+    dangerous_schemes = ['javascript:', 'vbscript:']
+    for scheme in dangerous_schemes:
+        if user_input.lower().startswith(scheme.lower()):
+            return ""  # Reject entirely if dangerous scheme detected
+    
+    # Allow only alphanumeric, common punctuation, and safe characters for OSINT targets
+    # This covers IP addresses, domains, CVE IDs, and software names
+    import string
+    allowed_chars = string.ascii_letters + string.digits + '.-_:/\\'
+    sanitized = ''.join(char for char in user_input if char in allowed_chars)
+    
     return sanitized[:100]
 
 
