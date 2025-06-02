@@ -93,7 +93,7 @@ def create_env_template():
 
 # Cohere API Key (Required for AI Agent)
 # Get your key from: https://dashboard.cohere.ai/api-keys
-# Free tier: 5M tokens/month
+# Free tier: Available - check current limits at https://cohere.com/pricing
 COHERE_API_KEY=your_cohere_api_key_here
 
 # =============================================================================
@@ -143,7 +143,7 @@ def display_api_info():
     print("=" * 50)
     
     apis = [
-        ("Cohere (AI Agent)", "https://dashboard.cohere.ai/api-keys", "5M tokens/month", "Required"),
+        ("Cohere (AI Agent)", "https://dashboard.cohere.ai/api-keys", "Free tier available", "Required"),
         ("Shodan", "https://account.shodan.io/", "100 queries/month", "Network recon"),
         ("VirusTotal", "https://www.virustotal.com/gui/join-us", "500 queries/day", "Threat intel"),
         ("AbuseIPDB", "https://www.abuseipdb.com/api", "1,000 queries/day", "IP reputation")
