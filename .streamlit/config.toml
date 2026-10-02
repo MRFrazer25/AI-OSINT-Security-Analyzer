@@ -4,6 +4,13 @@ developmentMode = false
 [server]
 runOnSave = false
 allowRunOnSave = false
+enableXsrfProtection = true
+maxUploadSize = 1
+
+[client]
+# Don't show stack traces (file paths, internals) to visitors of a public deployment.
+showErrorDetails = false
+toolbarMode = "minimal"
 
 [browser]
-gatherUsageStats = false 
+gatherUsageStats = false

@@ -3,6 +3,8 @@
 .env.local
 .env.*.local
 *.env
+!.env.example
+.streamlit/secrets.toml
 
 # Python
 __pycache__/
@@ -69,3 +71,11 @@ htmlcov/
 # Documentation build
 docs/_build/
 site/
+
+# Exported analysis reports (may contain sensitive findings)
+osint_report_*.md
+osint_report_*.json
+
+# Editor-local AI rules
+.cursor/
+.ruff_cache/

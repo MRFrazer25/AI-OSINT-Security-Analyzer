@@ -1,105 +1,115 @@
 # AI OSINT Security Analyzer
 
-An intelligent cybersecurity platform that uses AI agents to conduct autonomous OSINT investigations across multiple intelligence sources. Powered by Cohere's Command A model, it automatically selects tools, correlates findings, and provides comprehensive security assessments.
+An AI agent that investigates IP addresses, domains, CVEs and software versions across several threat-intelligence sources. It then writes an evidence-based security assessment. Cohere's Command A+ model decides which tools to run, and every finding in the report is tied back to the source that produced it.
+
+**Live demo:** [osint-ai.streamlit.app](https://osint-ai.streamlit.app)
 
 ## Features
 
-* **AI-Powered Analysis:** Autonomous tool selection and multi-step reasoning for comprehensive investigations.
-* **Complexity-Based Reports:** Choose from Quick Scan, Standard Analysis, Comprehensive Investigation, or Expert Deep Dive.
-* **Multi-Source Intelligence:** Integrates Shodan, VirusTotal, AbuseIPDB, CVE databases, CISA KEV, and NVD.
-* **Version-Aware Vulnerability Assessment:** Accurate analysis for specific software versions with intelligent filtering.
-* **Infrastructure Mapping:** Complete domain-to-IP analysis with hosting and service discovery.
-* **Real-Time Threat Intelligence:** Identifies actively exploited vulnerabilities and threat indicators.
-* **Secure & Private:** No data collection, session-only API key storage, advanced input sanitization.
+* **Agentic investigation:** the model plans and chains tool calls based on what it finds, within a per-run budget.
+* **Version-accurate vulnerability matching:** CVEs are checked against NVD's structured CPE affected-version ranges, so `nginx 1.20.1` is not reported as vulnerable to a bug fixed in 1.20.1. Each CVE is labelled *affected*, *needs review* (NVD hasn't analysed it yet) or *ruled out*.
+* **Exploit-aware prioritisation:** findings are enriched with [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) (exploited in the wild), CVSS (v4.0 → v2 fallback) and [FIRST EPSS](https://www.first.org/epss/) exploit probability.
+* **Exposure and reputation:** Shodan services and banners, VirusTotal engine detections (with the names of flagging vendors) and AbuseIPDB abuse reports.
+* **Analysis depth levels:** Quick Scan, Standard, Comprehensive and Expert. Each level sets how many tool calls the agent may make, protecting free-tier quotas.
+* **Key facts box:** open ports, reputation scores, version-check results, the minimum safe version to upgrade to, and confirmed vs related CISA KEV entries (with EPSS) are computed directly from the data sources and shown above the AI's write-up. They're identical on every run and use no AI credits.
+* **Model choice:** pick a Cohere model per analysis, with automatic fallback if your key can't use it.
+* **Exports:** a Markdown report, and full JSON evidence including every tool call.
 
-## Target Types (With Examples)
+## Supported targets
 
-* **IP Addresses:** `8.8.8.8` - Network services, reputation, hosting analysis
-* **Domain Names:** `example.com` - DNS infrastructure, subdomain mapping
-* **CVE IDs:** `CVE-2021-44228` - Vulnerability details and exploitation status
-* **Software + Version:** `apache httpd 2.4.62` - Version-specific vulnerability assessment
+| Type | Examples |
+|---|---|
+| IP address (IPv4/IPv6, public only) | `8.8.8.8`, `2606:4700:4700::1111` |
+| Domain or URL | `example.com`, `https://example.com/page` |
+| CVE ID | `CVE-2021-44228` |
+| Software + version | `nginx 1.20.1`, `Apache httpd 2.4.62`, `OpenSSH 8.9p1` |
 
-## Requirements
+Private, loopback, link-local, CGNAT and other non-public addresses are rejected.
 
-* Python 3.8+
-* Internet connection for OSINT API access
-* API keys (see Setup for free tier options)
+## Data sources
 
-## Setup and Installation
+| Source | Used for | API key | Get a key |
+|---|---|---|---|
+| [Cohere](https://cohere.com/) | AI agent | **Required** | [dashboard.cohere.com/api-keys](https://dashboard.cohere.com/api-keys) |
+| [Shodan](https://www.shodan.io/) | Open ports, services, versions | Optional | [account.shodan.io](https://account.shodan.io/) |
+| [VirusTotal](https://www.virustotal.com/) | Reputation / malicious detections | Optional | [virustotal.com/gui/join-us](https://www.virustotal.com/gui/join-us) |
+| [AbuseIPDB](https://www.abuseipdb.com/) | Abuse reports for IPs | Optional | [abuseipdb.com/register](https://www.abuseipdb.com/register) |
+| [NVD](https://nvd.nist.gov/) | CVE details and affected versions | Optional (raises rate limit) | [nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key) |
+| [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), [FIRST EPSS](https://www.first.org/epss/) | Exploitation status / probability | Not needed | n/a |
 
-### Option 1: Streamlit Website
+All of these offer free tiers. Check each provider for its current limits.
 
-**[Streamlit Link](https://osint-ai.streamlit.app)**
+## Running locally
 
-## Running the Application
+Requires Python 3.10+.
 
-### Option 2: Local Installation
+```bash
+git clone https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer.git
+cd AI-OSINT-Security-Analyzer
+python setup_check.py
+```
 
-1. **Clone Repository:**
-   ```bash
-   git clone https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer.git
-   cd AI-OSINT-Security-Analyzer
-   ```
-
-2. **Install Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Setup Configuration:**
-   ```bash
-   python setup.py
-   ```
-   This creates a `.env.example` template. Copy it to `.env` and add your API keys:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys
-   ```
-
-4. **Get API Keys (Free Tiers Available):**
-   * **[Cohere API](https://dashboard.cohere.ai/api-keys)** - Required for AI agent (1,000 calls/month free)
-   * **[Shodan](https://account.shodan.io/)** - Network reconnaissance (100 queries/month free)
-   * **[VirusTotal](https://www.virustotal.com/gui/join-us)** - Threat intelligence (500 queries/day free)
-   * **[AbuseIPDB](https://www.abuseipdb.com/api)** - IP reputation (1,000 queries/day free)
-   
-   *CVE-Search, CISA KEV, and NVD require no API keys*
+`setup_check.py` installs or upgrades the requirements, verifies the imports, creates `.env` from `.env.example`, and prints where to get each key. Get a [Cohere key](https://dashboard.cohere.com/api-keys) (required) plus any optional keys from the table above. Add them to `.env`, or enter them in the web UI. Then start the app:
 
 ```bash
 python -m streamlit run app.py
 ```
 
-Open your browser to `http://localhost:8501`, configure your API keys in the web interface, and start analyzing targets.
+Open http://localhost:8501.
 
-## How It Works
+### Choosing a Cohere model
 
-The AI agent automatically:
-1. **Analyzes** your target type (IP, domain, CVE, software)
-2. **Selects** optimal OSINT tools for investigation
-3. **Executes** tools in intelligent sequence based on discoveries
-4. **Correlates** findings across all intelligence sources
-5. **Synthesizes** comprehensive security assessment with risk prioritization
+Pick the model in the app, next to "Analysis depth". Only models that support tool use are offered:
 
-Choose your complexity level for report detail - all levels use the same comprehensive tool suite.
+| Model | Best for |
+|---|---|
+| `command-a-plus-05-2026` (default) | Most capable; recommended |
+| `command-a-03-2025` | Proven and stable |
+| `command-a-reasoning-08-2025` | Harder analyses; slower because it reasons first |
 
-## Security
+If your key can't use the chosen model, the analysis falls back to `command-a-03-2025` automatically and tells you. The model that actually ran is shown with every report. To change the default, set `COHERE_MODEL` in `.env`.
 
-* **No Persistent Storage:** All analysis data processed in-memory only
-* **Session-Only API Keys:** Never permanently stored or committed to files
-* **Input Sanitization:** Advanced protection against injection attacks
-* **Zero Telemetry:** No user tracking, analytics, or data collection
-* **Local Processing:** Analysis runs entirely on your chosen environment
+### Tests
 
-## Troubleshooting
+```bash
+pip install pytest
+python -m pytest
+```
 
-* **Import Errors:** Ensure all dependencies installed: `pip install -r requirements.txt`
-* **API Key Issues:** Verify keys are correctly added in web interface or `.env` file
-* **Streamlit Not Found:** Install streamlit: `pip install streamlit`
-* **Tool Failures:** Check internet connectivity and API key validity
+The tests run offline. They cover target validation, version comparison, NVD range matching, minimum safe versions, KEV and keyword matching, Markdown sanitising, and the agent loop (using a fake Cohere client). Many are regression tests built from real analysis runs.
+
+## How it works
+
+1. **Classify** the input as an IP, domain, CVE or software, rejecting anything invalid or non-public.
+2. **Baseline lookups (in code):** for IPs and domains, DNS, Shodan, VirusTotal and AbuseIPDB always run before the AI starts, so core coverage never depends on the model. Shodan results are automatically checked against CISA KEV, including products named only in service banners.
+3. **Investigate:** the agent chooses further tools (NVD version check, NVD lookup, CISA KEV, keyword search). Duplicate calls are served from cache, and quota-limited services are capped per run. Keyword searches keep only CVEs that mention the term as a whole word.
+4. **Verify versions:** for each product and version, CVEs come from NVD's CPE match API and are then re-checked locally against each affected range. The minimum safe version is computed from the range ends.
+5. **Report:** code builds the Key facts. The model writes an executive summary, a key-findings table, details (Confirmed / Related / Needs Review / Ruled Out), prioritised recommendations and limitations, citing a source for every claim.
+
+## Security and privacy
+
+* **Per-session API keys:** keys entered in the UI live only in that user's Streamlit session. They are never written to environment variables or disk, and never shared between users of a deployment. Keys configured on the server are never sent to the browser.
+* **Safe rendering:** the report includes third-party text (banners, descriptions), so it is rendered as Markdown only. Raw HTML is not rendered, remote images are removed (they could leak the viewer's IP), and links show their real destination.
+* **Prompt-injection hardening:** tool output is treated as untrusted data and kept inside escaped data blocks. Results are size-capped before they reach the model, and the model can't override server-side limits through tool arguments.
+* **Input validation:** CVE IDs, domains and IPs are validated before any API call, and query parameters are URL-encoded.
+* **Key redaction:** error messages are scrubbed of API key values.
+* **No telemetry:** Streamlit usage stats are disabled, stack traces are hidden from visitors, and analysed targets are not written to server logs.
+
+**What leaves your machine:** the target and the gathered evidence are sent to Cohere to produce the report. The target is also looked up at whichever sources apply (Shodan, VirusTotal, AbuseIPDB, NVD, CISA, FIRST). Each lookup is subject to that provider's privacy policy, so don't submit targets you need to keep confidential.
+
+Exported reports can contain sensitive findings. Handle them accordingly.
+
+## Accuracy notes
+
+* Banner versions can mislead. Linux distributions often backport security fixes without changing the version string, so verify findings against your distribution's security tracker.
+* "No known vulnerabilities" means no matching NVD records, not that a system is secure.
+* A product-level CISA KEV match shows that the product has been exploited before, not that the target's version is affected.
+* Testing so far has focused on common software and devices, so results for less common products may be less reliable. If a result looks wrong, please [open an issue](https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer/issues) with the target you used.
 
 ## License
 
-MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).
 
 ## Disclaimer
 
-This tool is designed for legitimate security research, defensive cybersecurity, and educational purposes only. Users are responsible for ensuring compliance with applicable laws and regulations. Unauthorized use against systems you do not own or have explicit permission to test is prohibited.
+For legitimate security research, defensive security and education only. Only investigate systems you own or are authorized to assess, and follow each data provider's terms of service.
