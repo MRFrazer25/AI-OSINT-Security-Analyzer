@@ -178,10 +178,29 @@ DOMAIN_RE = re.compile(
     r"^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$",
     re.IGNORECASE,
 )
-SOFTWARE_VERSION_RE = re.compile(
-    r"^(?P<name>[a-z][a-z0-9 ._+-]*?)[\s/_-]+v?(?P<version>\d+(?:\.\d+)*[a-z0-9.+-]*)$", re.IGNORECASE
-)
-SOFTWARE_NAME_RE = re.compile(r"^[a-z][a-z0-9 ._+-]{1,60}$", re.IGNORECASE)
+# Simple, unambiguous patterns (no overlapping quantifiers), so matching time stays linear in input length.
+SOFTWARE_NAME_RE = re.compile(r"[a-z][a-z0-9 ._+-]{1,60}", re.IGNORECASE)
+_SOFTWARE_NAME_PART_RE = re.compile(r"[a-z][a-z0-9 ._+-]*", re.IGNORECASE)
+_SOFTWARE_VERSION_PART_RE = re.compile(r"v?(\d[a-z0-9.+-]*)", re.IGNORECASE)
+_NAME_VERSION_SEPARATORS = " \t/_-"
+
+
+def split_software_version(value: str) -> Optional[Tuple[str, str]]:
+    """Split "nginx 1.20.1" / "nginx/1.18.0" / "OpenSSH_8.9p1" into (name, version).
+
+    Done with a plain scan instead of one big regex: the regex version backtracked polynomially
+    on crafted input (CodeQL py/polynomial-redos).
+    """
+    seps = _NAME_VERSION_SEPARATORS
+    for i, ch in enumerate(value):
+        # Try the end of each run of separators, leftmost first (shortest name wins).
+        if ch not in seps or (i + 1 < len(value) and value[i + 1] in seps):
+            continue
+        version = _SOFTWARE_VERSION_PART_RE.fullmatch(value[i + 1:])
+        name = value[:i].rstrip(seps)
+        if version and name and _SOFTWARE_NAME_PART_RE.fullmatch(name):
+            return name.strip(" ._-"), version.group(1)
+    return None
 
 
 @dataclass(frozen=True)
@@ -244,11 +263,10 @@ def classify_target(raw: str) -> Target:
     if is_valid_domain(domain):
         return Target(domain, "domain")
 
-    match = SOFTWARE_VERSION_RE.match(value)
-    if match:
-        name = match.group("name").strip(" ._-")
-        return Target(value, "software", software_name=name, software_version=match.group("version"))
-    if SOFTWARE_NAME_RE.match(value) and not re.fullmatch(r"[\d.]+", value):
+    split = split_software_version(value)
+    if split:
+        return Target(value, "software", software_name=split[0], software_version=split[1])
+    if SOFTWARE_NAME_RE.fullmatch(value) and not re.fullmatch(r"[\d.]+", value):
         return Target(value, "software", software_name=value)
 
     return Target(value, "invalid",

@@ -234,9 +234,10 @@ def _compact_for_llm(result: Dict[str, Any]) -> Dict[str, Any]:
             "partial": json.dumps(result, default=str)[:MAX_TOOL_RESULT_CHARS]}
 
 
-_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
-_MD_REF_IMAGE = re.compile(r"!\[([^\]]*)\]\[[^\]]*\]")
-_MD_LINK = re.compile(r"\[([^\]]+)\]\(\s*([^)\s]+)[^)]*\)")
+# Bounded, non-overlapping quantifiers keep these linear on hostile input (e.g. 20k "[" characters).
+_MD_IMAGE = re.compile(r"!\[([^\]\n]{0,500})\]\(([^)\n]{0,2000})\)")
+_MD_REF_IMAGE = re.compile(r"!\[([^\]\n]{0,500})\]\[([^\]\n]{0,500})\]")
+_MD_LINK = re.compile(r"\[([^\]\n]{1,500})\]\(([^)\n]{0,2000})\)")
 _MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>$~])")
 
 
@@ -251,7 +252,8 @@ def sanitize_report_markdown(text: str) -> str:
     text = _MD_REF_IMAGE.sub(lambda m: f"[image removed: {m.group(1)}]", text)
 
     def link(m: re.Match) -> str:
-        label, url = m.group(1), m.group(2)
+        parts = m.group(2).split()
+        label, url = m.group(1), (parts[0] if parts else "")
         if re.match(r"^https?://", url, re.IGNORECASE):
             return f"[{label}]({url})" if label.strip() == url else f"{label} ({url})"
         return label

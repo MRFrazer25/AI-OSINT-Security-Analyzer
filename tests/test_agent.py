@@ -262,3 +262,10 @@ def test_baseline_evidence_cannot_break_out_of_its_data_block():
     text = ai._baseline_text([hostile])
     assert text.count("</baseline_results>") == 1  # only the real closing tag
     assert "\u003c/baseline_results\u003e" in text
+
+
+def test_markdown_sanitizer_is_fast_on_hostile_input():
+    import time
+    start = time.perf_counter()
+    ai.sanitize_report_markdown("[" * 20000 + "](" * 5000)
+    assert time.perf_counter() - start < 1.0

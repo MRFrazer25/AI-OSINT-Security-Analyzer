@@ -294,3 +294,25 @@ def test_nvd_rate_limit_403_is_retried_then_explained(monkeypatch):
     with pytest.raises(t.SourceError, match="rate limit.*NVD API key"):
         t._nvd_get(t.NVD_CVE_URL, {"cveId": "CVE-2000-9999"}, None)
     assert len(calls) == 2  # one retry
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("nginx 1.20.1", ("nginx", "1.20.1")),
+    ("Apache httpd 2.4.62", ("Apache httpd", "2.4.62")),
+    ("nginx/1.18.0", ("nginx", "1.18.0")),
+    ("OpenSSH_8.9p1", ("OpenSSH", "8.9p1")),
+    ("redis v7", ("redis", "7")),
+    ("jenkins", None),
+    ("123 4.5", None),
+])
+def test_split_software_version(value, expected):
+    assert t.split_software_version(value) == expected
+
+
+def test_software_parsing_is_fast_on_hostile_input():
+    # CodeQL py/polynomial-redos patterns ("a" + many spaces, "a\t9" + many ".0"); the old regex took ~8s on 20k chars.
+    import time
+    start = time.perf_counter()
+    t.split_software_version("a" + " " * 20000 + "!")
+    t.split_software_version("a\t9" + ".0" * 10000 + "!")
+    assert time.perf_counter() - start < 1.0
