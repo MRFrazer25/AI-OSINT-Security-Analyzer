@@ -11,6 +11,7 @@ users of a shared deployment never see or use each other's keys.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -96,10 +97,14 @@ def redact(text: str, keys: Optional[ApiKeys]) -> str:
 # ---------------------------------------------------------------------------
 
 class _TTLCache:
-    def __init__(self, ttl_seconds: float, maxsize: int = 1024):
+    """Expiring cache bounded by entry count and, optionally, by the total ``size`` given to ``set``."""
+
+    def __init__(self, ttl_seconds: float, maxsize: int = 1024, max_bytes: float = float("inf")):
         self._ttl = ttl_seconds
         self._maxsize = maxsize
-        self._data: Dict[Any, Tuple[float, Any]] = {}
+        self._max_bytes = max_bytes
+        self._bytes = 0
+        self._data: Dict[Any, Tuple[float, Any, int]] = {}  # insertion order is age order
         self._lock = threading.Lock()
 
     def get(self, key: Any) -> Any:
@@ -107,42 +112,93 @@ class _TTLCache:
             item = self._data.get(key)
             if item and time.monotonic() - item[0] < self._ttl:
                 return item[1]
-            self._data.pop(key, None)
+            self._discard(key)
             return None
 
-    def set(self, key: Any, value: Any) -> None:
+    def set(self, key: Any, value: Any, size: int = 0) -> None:
         with self._lock:
-            if len(self._data) >= self._maxsize:
-                oldest = min(self._data, key=lambda k: self._data[k][0])
-                self._data.pop(oldest, None)
-            self._data[key] = (time.monotonic(), value)
+            self._discard(key)
+            if size > self._max_bytes:
+                return
+            while self._data and (len(self._data) >= self._maxsize or self._bytes + size > self._max_bytes):
+                self._discard(next(iter(self._data)))
+            self._data[key] = (time.monotonic(), value, size)
+            self._bytes += size
+
+    def _discard(self, key: Any) -> None:
+        item = self._data.pop(key, None)
+        if item:
+            self._bytes -= item[2]
 
 
 class _RateLimiter:
-    """Rolling-window limiter (NVD allows 5 req/30s without a key, 50 with one)."""
+    """Rolling-window limiter: at most ``max_calls`` calls per ``period`` seconds."""
 
-    def __init__(self, period: float):
+    def __init__(self, max_calls: int, period: float):
+        self._max_calls = max_calls
         self._period = period
         self._calls: deque = deque()
         self._lock = threading.Lock()
 
-    def wait(self, max_calls: int) -> None:
-        with self._lock:
-            now = time.monotonic()
-            while self._calls and now - self._calls[0] >= self._period:
-                self._calls.popleft()
-            if len(self._calls) >= max_calls:
-                time.sleep(max(0.0, self._period - (now - self._calls[0])) + 0.1)
+    def wait(self) -> None:
+        while True:
+            with self._lock:
                 now = time.monotonic()
                 while self._calls and now - self._calls[0] >= self._period:
                     self._calls.popleft()
-            self._calls.append(time.monotonic())
+                if len(self._calls) < self._max_calls:
+                    self._calls.append(now)
+                    return
+                delay = self._period - (now - self._calls[0])
+            # Sleep without the lock so other callers aren't blocked; the window is re-checked afterwards.
+            time.sleep(delay + 0.1)
 
 
-_nvd_cache = _TTLCache(ttl_seconds=3600)
+# Responses are summarised before caching; the byte budget bounds memory shared by every session.
+_nvd_cache = _TTLCache(ttl_seconds=3600, maxsize=512, max_bytes=32 * 1024 * 1024)
 _epss_cache = _TTLCache(ttl_seconds=12 * 3600, maxsize=5000)
 _kev_cache = _TTLCache(ttl_seconds=6 * 3600, maxsize=1)
-_nvd_limiter = _RateLimiter(period=30.0)
+# NVD allows 5 requests per 30 s without a key (per IP) and 50 with one.
+_nvd_keyless_limiter = _RateLimiter(max_calls=5, period=30.0)
+_nvd_keyed_limiter = _RateLimiter(max_calls=50, period=30.0)
+# Analyses that consume the operator's keys, shared by every Streamlit session in this process.
+SERVER_KEY_WINDOW_SECONDS = 3600
+
+
+class ServerKeyQuota:
+    """Sliding-window count of analyses that use the server's keys."""
+
+    def __init__(self) -> None:
+        self._runs: deque = deque()  # (start time, client)
+        self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._runs.clear()
+
+    def acquire(self, client: str, total_limit: int, client_limit: int) -> float:
+        """Record a run and return 0, or return the seconds until one is allowed."""
+        with self._lock:
+            now = time.monotonic()
+            while self._runs and now - self._runs[0][0] >= SERVER_KEY_WINDOW_SECONDS:
+                self._runs.popleft()
+            mine = [started for started, who in self._runs if who == client]
+            if len(self._runs) >= total_limit:
+                oldest = self._runs[0][0] if self._runs else now
+            elif len(mine) >= client_limit:
+                oldest = mine[0] if mine else now
+            else:
+                self._runs.append((now, client))
+                return 0.0
+            return max(1.0, SERVER_KEY_WINDOW_SECONDS - (now - oldest))
+
+
+_server_key_quota = ServerKeyQuota()
+
+
+def server_key_quota() -> ServerKeyQuota:
+    """Process-wide bucket. Lives on this imported module so Streamlit reruns and AppTest sessions share it."""
+    return _server_key_quota
 
 
 class SourceError(Exception):
@@ -365,9 +421,12 @@ def compare_versions(a: str, b: str) -> int:
     """Compare two version strings. Returns -1, 0 or 1.
 
     Handles dotted numerics plus vendor suffixes that PEP 440 cannot parse,
-    e.g. 1.1.1 < 1.1.1w, 8.9 < 8.9p1, 2.4.9 < 2.4.62, 1.0.0rc1 < 1.0.0.
+    e.g. 1.1.1 < 1.1.1w, 8.9 < 8.9p1, 2.4.9 < 2.4.62, 1.0.0rc1 < 1.0.0, 2.4 == 2.4.0.
     """
-    for x, y in zip_longest(_version_tokens(a), _version_tokens(b), fillvalue=(1, "")):
+    for x, y in zip_longest(_version_tokens(a), _version_tokens(b)):
+        # A missing part counts as 0 against a number and as an empty suffix otherwise.
+        x = x or ((2, 0) if y[0] == 2 else (1, ""))
+        y = y or ((2, 0) if x[0] == 2 else (1, ""))
         if x == y:
             continue
         if x[0] != y[0]:
@@ -512,6 +571,45 @@ def _describe_range(match: Dict[str, Any]) -> str:
 # NVD helpers
 # ---------------------------------------------------------------------------
 
+_NVD_MATCH_FIELDS = ("vulnerable", "criteria", "versionStartIncluding", "versionStartExcluding",
+                     "versionEndIncluding", "versionEndExcluding")
+_NVD_KEV_FIELDS = ("cisaExploitAdd", "cisaActionDue", "cisaRequiredAction", "cisaVulnerabilityName")
+NVD_MAX_REFERENCES = 20
+NVD_MAX_DESCRIPTION = 2000
+
+
+def _summarize_nvd_record(cve: Dict[str, Any]) -> Dict[str, Any]:
+    """The fields of an NVD CVE record that the tools read, in NVD's own shape (raw records can be very large)."""
+    record = {k: cve[k] for k in ("id", "vulnStatus", "published", "lastModified", "weaknesses", *_NVD_KEV_FIELDS)
+              if k in cve}
+    record["descriptions"] = [{"lang": "en", "value": _english_description(cve)[:NVD_MAX_DESCRIPTION]}]
+    record["references"] = [{"url": r.get("url"), "tags": r.get("tags", [])}
+                            for r in (cve.get("references") or [])[:NVD_MAX_REFERENCES]]
+    metrics = cve.get("metrics", {}) or {}
+    for key in _CVSS_METRIC_KEYS:
+        if metrics.get(key):
+            record["metrics"] = {key: [_primary_metric(metrics[key])]}
+            break
+    record["configurations"] = [
+        {"operator": config.get("operator"), "nodes": [
+            {"cpeMatch": [{k: m[k] for k in _NVD_MATCH_FIELDS if k in m}
+                          for m in node.get("cpeMatch", []) or [] if m.get("vulnerable")]}
+            for node in config.get("nodes", []) or []]}
+        for config in cve.get("configurations", []) or []
+    ]
+    return record
+
+
+def _summarize_nvd_response(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "totalResults": data.get("totalResults", 0),
+        "vulnerabilities": [{"cve": _summarize_nvd_record(v.get("cve", {}) or {})}
+                            for v in data.get("vulnerabilities", []) or []],
+        "products": [{"cpe": {"cpeName": (p.get("cpe") or {}).get("cpeName", "")}}
+                     for p in data.get("products", []) or []],
+    }
+
+
 def _nvd_get(url: str, params: Dict[str, Any], keys: Optional[ApiKeys]) -> Dict[str, Any]:
     cache_key = (url, tuple(sorted(params.items())))
     cached = _nvd_cache.get(cache_key)
@@ -519,8 +617,9 @@ def _nvd_get(url: str, params: Dict[str, Any], keys: Optional[ApiKeys]) -> Dict[
         return cached
     nvd_key = keys.nvd if keys else ""
     headers = {"apiKey": nvd_key} if nvd_key else {}
+    limiter = _nvd_keyed_limiter if nvd_key else _nvd_keyless_limiter
     for attempt in range(2):
-        _nvd_limiter.wait(50 if nvd_key else 5)
+        limiter.wait()
         resp = _http_get(url, params=params, headers=headers, timeout=30)
         # NVD signals rate limiting with 403 (not 429). On shared hosting other apps on the same IP count too.
         if resp.status_code != 403 or attempt:
@@ -536,10 +635,10 @@ def _nvd_get(url: str, params: Dict[str, Any], keys: Optional[ApiKeys]) -> Dict[
         raise SourceError(f"NVD returned HTTP {resp.status_code}" + (f": {message}" if message else ""))
     else:
         try:
-            data = resp.json()
-        except ValueError as exc:
+            data = _summarize_nvd_response(resp.json())
+        except (ValueError, AttributeError) as exc:
             raise SourceError("NVD returned invalid JSON") from exc
-    _nvd_cache.set(cache_key, data)
+    _nvd_cache.set(cache_key, data, size=len(json.dumps(data, default=str)))
     return data
 
 
@@ -580,15 +679,21 @@ def severity_from_score(score: Optional[float]) -> str:
     return "NONE"
 
 
+_CVSS_METRIC_KEYS = {"cvssMetricV40": "4.0", "cvssMetricV31": "3.1", "cvssMetricV30": "3.0", "cvssMetricV2": "2.0"}
+
+
+def _primary_metric(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return next((e for e in entries if e.get("type") == "Primary"), entries[0])
+
+
 def extract_cvss(cve: Dict[str, Any]) -> Dict[str, Any]:
     """Pick the best available CVSS metric: newest version first, NVD 'Primary' score preferred."""
     metrics = cve.get("metrics", {}) or {}
-    for key, label in (("cvssMetricV40", "4.0"), ("cvssMetricV31", "3.1"),
-                       ("cvssMetricV30", "3.0"), ("cvssMetricV2", "2.0")):
+    for key, label in _CVSS_METRIC_KEYS.items():
         entries = metrics.get(key) or []
         if not entries:
             continue
-        entry = next((e for e in entries if e.get("type") == "Primary"), entries[0])
+        entry = _primary_metric(entries)
         data = entry.get("cvssData", {})
         score = data.get("baseScore")
         severity = data.get("baseSeverity") or entry.get("baseSeverity") or severity_from_score(score)
@@ -1172,7 +1277,7 @@ def osint_cve_search(search_term: str, keys: Optional[ApiKeys] = None, result_li
     }
 
 
-def osint_cisa_kev_check(keys: Optional[ApiKeys] = None, cve_ids: Optional[Sequence[str]] = None,
+def osint_cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
                          software_list: Optional[Sequence[str]] = None, kev_limit: int = 10,
                          cve_id: Optional[str] = None) -> Dict[str, Any]:
     """Check CVE IDs and/or product names against CISA's Known Exploited Vulnerabilities catalog."""

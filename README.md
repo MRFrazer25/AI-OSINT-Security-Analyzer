@@ -76,7 +76,19 @@ pip install pytest
 python -m pytest
 ```
 
-The tests run offline. They cover target validation, version comparison, NVD range matching, minimum safe versions, KEV and keyword matching, Markdown sanitising, and the agent loop (using a fake Cohere client). Many are regression tests built from real analysis runs.
+The tests run offline. They cover target validation, version comparison (including trailing zeros such as `2.4` vs `2.4.0`), NVD range matching, minimum safe versions, KEV and keyword matching, Markdown sanitising and export escaping, NVD cache/rate-limit behaviour, shared-key quotas, and the agent loop (using a fake Cohere client). Many are regression tests built from real analysis runs.
+
+### Sharing server keys on a deployment
+
+Keys in `.env` or Streamlit secrets are available to every visitor of that process. On a public app, either require visitors to bring their own keys or keep the hourly caps:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `SHARE_SERVER_KEYS` | `true` | Set `false` so server keys are never used and every visitor must enter their own. |
+| `SERVER_KEY_RUNS_PER_HOUR` | `20` | Process-wide analyses that may consume the server's keys. |
+| `SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR` | `5` | Per-visitor cap (best-effort client address; the process-wide cap is the real guard). |
+
+These apply only when an analysis uses a server-provided key. A visitor who enters their own keys is not counted. There is still a 15-second per-session cooldown between runs. The same names can be set in `.streamlit/secrets.toml`.
 
 ## How it works
 
@@ -88,8 +100,8 @@ The tests run offline. They cover target validation, version comparison, NVD ran
 
 ## Security and privacy
 
-* **Per-session API keys:** keys entered in the UI live only in that user's Streamlit session. They are never written to environment variables or disk, and never shared between users of a deployment. Keys configured on the server are never sent to the browser.
-* **Safe rendering:** the report includes third-party text (banners, descriptions), so it is rendered as Markdown only. Raw HTML is not rendered, remote images are removed (they could leak the viewer's IP), and links show their real destination.
+* **Per-session API keys:** keys entered in the UI live only in that user's Streamlit session. They are never written to environment variables or disk, and never shared between users of a deployment. Keys configured on the server are never sent to the browser. Shared server keys can be withheld (`SHARE_SERVER_KEYS=false`) or capped per hour so one visitor cannot drain the operator's quota.
+* **Safe rendering:** the report includes third-party text (banners, descriptions), so it is rendered as Markdown only. Raw HTML is not rendered. Remaining `[`, `]` and `<` in the model's write-up are escaped so reference images, hidden links and HTML cannot survive, and third-party software names in the Markdown export are escaped the same way as on screen.
 * **Prompt-injection hardening:** tool output is treated as untrusted data and kept inside escaped data blocks. Results are size-capped before they reach the model, and the model can't override server-side limits through tool arguments.
 * **Input validation:** CVE IDs, domains and IPs are validated before any API call, and query parameters are URL-encoded.
 * **Key redaction:** error messages are scrubbed of API key values.

@@ -2,15 +2,16 @@
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime
 
 import streamlit as st
 
-from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_report_data, escape_markdown,
-                run_osint_agent, sanitize_report_markdown)
-from osint_tools import KEY_SIGNUP_URLS, ApiKeys, classify_target
+from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_markdown_export, build_report_data,
+                escape_markdown, run_osint_agent, sanitize_report_markdown)
+from osint_tools import KEY_SIGNUP_URLS, ApiKeys, classify_target, server_key_quota, validate_public_ip
 
 try:
     from dotenv import load_dotenv
@@ -45,14 +46,45 @@ TOOL_LABELS = {
 }
 
 
-def server_keys() -> ApiKeys:
-    """Keys configured by whoever runs the app (.env, environment, or Streamlit secrets)."""
-    keys = ApiKeys.from_env()
+def setting(name: str, default: str = "") -> str:
+    """Operator setting from Streamlit secrets, falling back to the environment / .env."""
     try:
-        secrets = {name: str(st.secrets.get(env, "")) for name, (_, env, _, _) in KEY_FIELDS.items()}
+        value = str(st.secrets.get(name, ""))
     except Exception:  # no secrets.toml
-        secrets = {}
-    return keys.with_overrides(**secrets)
+        value = ""
+    return value or os.getenv(name, default)
+
+
+def int_setting(name: str, default: int) -> int:
+    try:
+        return max(0, int(setting(name, str(default))))
+    except ValueError:
+        return default
+
+
+def server_key_limits() -> tuple[int, int]:
+    """(analyses per hour for all visitors, per visitor) that may use the server's keys."""
+    return int_setting("SERVER_KEY_RUNS_PER_HOUR", 20), int_setting("SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR", 5)
+
+
+def server_keys() -> ApiKeys:
+    """Keys configured by whoever runs the app (.env, environment, or Streamlit secrets).
+
+    With SHARE_SERVER_KEYS=false they are never used, so every visitor must bring their own keys.
+    """
+    if setting("SHARE_SERVER_KEYS", "true").strip().lower() in ("false", "0", "no", "off"):
+        return ApiKeys()
+    return ApiKeys.from_env().with_overrides(**{name: setting(env) for name, (_, env, _, _) in KEY_FIELDS.items()})
+
+
+def client_id() -> str:
+    """Best-effort visitor address for the per-client limit (the process-wide limit is the real guard)."""
+    address = st.context.ip_address or ""
+    if not validate_public_ip(address)[0]:
+        # Behind a reverse proxy the peer is the proxy; use the address it appended last.
+        forwarded = (st.context.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+        address = forwarded or address
+    return address or "local"
 
 
 def effective_keys() -> ApiKeys:
@@ -136,6 +168,10 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
         "Keys you enter are kept only in this browser session's server-side memory. They are never written "
         "to disk or shared with other users, and they are cleared when the session ends."
     )
+    if any(getattr(server, n) for n in KEY_FIELDS):
+        total_limit, client_limit = server_key_limits()
+        st.caption(f"Keys provided by this deployment are shared by all visitors and limited to {total_limit} "
+                   f"analyses per hour ({client_limit} per visitor). Add your own keys to avoid the limit.")
     with st.form("api_keys_form", clear_on_submit=True):
         cols = st.columns(2)
         entered = {}
@@ -200,6 +236,7 @@ if run_clicked:
     target = classify_target(target_input)
     keys = effective_keys()
     wait = RUN_COOLDOWN_SECONDS - (time.time() - st.session_state.last_run)
+    uses_server_keys = any(getattr(server, n) and not st.session_state.user_keys.get(n) for n in KEY_FIELDS)
     if target.type == "invalid":
         st.error(target.error)
     elif not keys.cohere:
@@ -207,6 +244,9 @@ if run_clicked:
                  "then add it under API Keys Configuration.")
     elif wait > 0:
         st.warning(f"Please wait {int(wait) + 1}s before starting another analysis.")
+    elif uses_server_keys and (quota_wait := server_key_quota().acquire(client_id(), *server_key_limits())):
+        st.warning(f"This deployment's shared API keys have reached their hourly limit. Try again in about "
+                   f"{int(quota_wait // 60) + 1} min, or add your own keys under API Keys Configuration.")
     else:
         st.session_state.last_run = time.time()
         missing = [key_link(n) for n in ("shodan", "virustotal", "abuseipdb") if not getattr(keys, n)]
@@ -274,20 +314,8 @@ if data:
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = f"osint_report_{safe_filename(meta['target'])}_{stamp}"
-    markdown_export = (
-        f"# AI OSINT Security Report: {meta['target']}\n\n"
-        f"- Target type: {meta['target_type']}\n- Depth: {meta['complexity']}\n"
-        f"- Generated: {meta['generated_at']}\n- Model: {meta['model']}\n\n"
-        "## Key Facts (computed from the data sources)\n\n"
-        + "".join(f"- **{escape_markdown(f['label'])}:** {escape_markdown(f['value'])}\n" for f in facts)
-        # Same sanitising as on screen, so the file is safe to open in any Markdown viewer.
-        + f"\n{sanitize_report_markdown(data['report_markdown'])}\n\n---\n"
-        f"Software found: {', '.join(summary['discovered_software']) or 'none'}  \n"
-        f"CISA KEV confirmed for this target: {', '.join(confirmed_kev) or 'none'}  \n"
-        f"CISA KEV related (product family/vendor, unconfirmed): {', '.join(related_kev) or 'none'}\n"
-    )
     d1, d2 = st.columns(2)
-    d1.download_button("Download report (Markdown)", markdown_export, f"{base}.md", "text/markdown",
+    d1.download_button("Download report (Markdown)", build_markdown_export(data), f"{base}.md", "text/markdown",
                        on_click="ignore", width="stretch")
     d2.download_button("Download full data (JSON)", json.dumps(data, indent=2, default=str), f"{base}.json",
                        "application/json", on_click="ignore", width="stretch")

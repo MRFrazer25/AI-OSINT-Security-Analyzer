@@ -236,8 +236,9 @@ def _compact_for_llm(result: Dict[str, Any]) -> Dict[str, Any]:
 
 # Bounded, non-overlapping quantifiers keep these linear on hostile input (e.g. 20k "[" characters).
 _MD_IMAGE = re.compile(r"!\[([^\]\n]{0,500})\]\(([^)\n]{0,2000})\)")
-_MD_REF_IMAGE = re.compile(r"!\[([^\]\n]{0,500})\]\[([^\]\n]{0,500})\]")
 _MD_LINK = re.compile(r"\[([^\]\n]{1,500})\]\(([^)\n]{0,2000})\)")
+# An existing escape pair is kept as is, so "\\[" can't turn into an escaped backslash followed by a live "[".
+_MD_REPORT_ESCAPE = re.compile(r"\\.|[\[\]<$]")
 _MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>$~])")
 
 
@@ -245,21 +246,23 @@ def sanitize_report_markdown(text: str) -> str:
     """Make model-written Markdown safe to render.
 
     The report can echo attacker-controlled text (e.g. service banners). Remote images
-    would load in the viewer's browser and leak their IP, so they are removed; links are
-    kept only for http(s) and shown with their URL; '$' is escaped so it isn't parsed as LaTeX.
+    would load in the viewer's browser and leak their IP, and link labels can hide their
+    destination. Common inline images are replaced by their alt text and inline http(s)
+    links are written out as "label (url)". Every remaining '[', ']' and '<' is then
+    escaped, so no image, link, reference definition or HTML tag of any form survives;
+    '$' is escaped so it isn't parsed as LaTeX. Headings, lists, tables and emphasis still render.
     """
-    text = _MD_IMAGE.sub(lambda m: f"[image removed: {m.group(1)}]", text or "")
-    text = _MD_REF_IMAGE.sub(lambda m: f"[image removed: {m.group(1)}]", text)
+    text = _MD_IMAGE.sub(lambda m: f"(image removed: {m.group(1)})", text or "")
 
     def link(m: re.Match) -> str:
         parts = m.group(2).split()
         label, url = m.group(1), (parts[0] if parts else "")
         if re.match(r"^https?://", url, re.IGNORECASE):
-            return f"[{label}]({url})" if label.strip() == url else f"{label} ({url})"
+            return url if label.strip() == url else f"{label} ({url})"
         return label
 
     text = _MD_LINK.sub(link, text)
-    return re.sub(r"(?<!\\)\$", r"\\$", text)
+    return _MD_REPORT_ESCAPE.sub(lambda m: m.group() if len(m.group()) == 2 else "\\" + m.group(), text)
 
 
 def escape_markdown(text: Any) -> str:
@@ -389,7 +392,7 @@ class _ToolRunner:
             "osint_virustotal_check": {"keys": self.keys},
             "osint_abuseipdb_check": {"keys": self.keys},
             "osint_cve_search": {"keys": self.keys, "result_limit": p["cve_results"]},
-            "osint_cisa_kev_check": {"keys": self.keys, "kev_limit": p["kev_matches"]},
+            "osint_cisa_kev_check": {"kev_limit": p["kev_matches"]},
             "osint_nvd_lookup": {"keys": self.keys, "reference_limit": p["references"]},
             "osint_version_specific_vulnerability_check": {"keys": self.keys, "result_limit": p["cve_results"],
                                                            "not_affected_limit": p["ruled_out"]},
@@ -695,3 +698,24 @@ def build_report_data(result: AgentResult, include_facts: bool = True) -> Dict[s
             for r in result.tool_calls
         ],
     }
+
+
+def build_markdown_export(data: Dict[str, Any]) -> str:
+    """The downloadable Markdown report.
+
+    Third-party text (banners, product names, the model's report) is escaped or sanitised the same way as on
+    screen, so the file is safe to open in any Markdown viewer.
+    """
+    meta, summary = data["metadata"], data["summary"]
+    facts = data.get("key_facts") or []
+    return (
+        f"# AI OSINT Security Report: {escape_markdown(meta['target'])}\n\n"
+        f"- Target type: {meta['target_type']}\n- Depth: {meta['complexity']}\n"
+        f"- Generated: {meta['generated_at']}\n- Model: {meta['model']}\n\n"
+        "## Key Facts (computed from the data sources)\n\n"
+        + "".join(f"- **{escape_markdown(f['label'])}:** {escape_markdown(f['value'])}\n" for f in facts)
+        + f"\n{sanitize_report_markdown(data['report_markdown'])}\n\n---\n"
+        f"Software found: {', '.join(escape_markdown(s) for s in summary['discovered_software']) or 'none'}  \n"
+        f"CISA KEV confirmed for this target: {', '.join(summary['cisa_kev_confirmed']) or 'none'}  \n"
+        f"CISA KEV related (product family/vendor, unconfirmed): {', '.join(summary['cisa_kev_related']) or 'none'}\n"
+    )

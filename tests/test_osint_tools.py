@@ -41,6 +41,11 @@ def test_classify_software_splits_name_and_version():
     ("8.9", "8.9p1", -1),
     ("1.0.0rc1", "1.0.0", -1),
     ("10.0", "9.9", 1),
+    ("2.4", "2.4.0", 0),
+    ("2.4.0", "2.4", 0),
+    ("1.20", "1.20.1", -1),
+    ("2.0", "2.0.0.0", 0),
+    ("1.0", "1.0.0rc1", 1),
 ])
 def test_compare_versions(a, b, expected):
     assert t.compare_versions(a, b) == expected
@@ -76,6 +81,15 @@ def test_exact_version_cpe_and_update_field():
 def test_exact_minor_does_not_cover_patch_release():
     cve = _cve({"vulnerable": True, "criteria": "cpe:2.3:a:f5:nginx:1.20:*:*:*:*:*:*:*"})
     assert t.assess_cve_for_version(cve, "*", "nginx", "1.20.1")["status"] == "NOT_AFFECTED"
+
+
+def test_trailing_zeros_do_not_change_range_verdicts():
+    start = _cve({"vulnerable": True, "criteria": NGINX, "versionStartIncluding": "2.4.0", "versionEndExcluding": "2.5"})
+    assert t.assess_cve_for_version(start, "*", "nginx", "2.4")["status"] == "AFFECTED"
+    end = _cve({"vulnerable": True, "criteria": NGINX, "versionEndExcluding": "2.0.0"})
+    assert t.assess_cve_for_version(end, "*", "nginx", "2.0")["status"] == "NOT_AFFECTED"
+    exact = _cve({"vulnerable": True, "criteria": "cpe:2.3:a:f5:nginx:2.4.0:*:*:*:*:*:*:*"})
+    assert t.assess_cve_for_version(exact, "*", "nginx", "2.4")["status"] == "AFFECTED"
 
 
 def test_other_products_and_non_vulnerable_entries_are_ignored():
@@ -290,10 +304,104 @@ def test_nvd_rate_limit_403_is_retried_then_explained(monkeypatch):
     calls = []
     monkeypatch.setattr(t, "_http_get", lambda *a, **k: calls.append(1) or Resp())
     monkeypatch.setattr(t.time, "sleep", lambda s: None)
-    monkeypatch.setattr(t._nvd_limiter, "wait", lambda n: None)
+    monkeypatch.setattr(t._RateLimiter, "wait", lambda self: None)
     with pytest.raises(t.SourceError, match="rate limit.*NVD API key"):
         t._nvd_get(t.NVD_CVE_URL, {"cveId": "CVE-2000-9999"}, None)
     assert len(calls) == 2  # one retry
+
+
+def test_rate_limiter_sleeps_without_the_lock_and_rechecks(monkeypatch):
+    limiter = t._RateLimiter(max_calls=2, period=30.0)
+    clock = [1000.0]
+    sleeps = []
+
+    def fake_sleep(seconds):
+        assert not limiter._lock.locked()
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(t.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(t.time, "sleep", fake_sleep)
+    limiter.wait()
+    limiter.wait()
+    assert sleeps == []
+    limiter.wait()
+    assert len(sleeps) == 1 and sleeps[0] > 29
+    assert len(limiter._calls) == 1  # both earlier calls aged out before this one was recorded
+
+
+def test_nvd_keyed_and_keyless_requests_use_separate_limits(monkeypatch):
+    class Resp:
+        status_code, headers = 200, {}
+
+        @staticmethod
+        def json():
+            return {"totalResults": 0, "vulnerabilities": []}
+
+    used = []
+    monkeypatch.setattr(t, "_http_get", lambda *a, **k: Resp())
+    monkeypatch.setattr(t._nvd_keyed_limiter, "wait", lambda: used.append("keyed"))
+    monkeypatch.setattr(t._nvd_keyless_limiter, "wait", lambda: used.append("keyless"))
+    t._nvd_get(t.NVD_CVE_URL, {"cveId": "CVE-2000-0001", "test": "limiter"}, t.ApiKeys(nvd="k"))
+    t._nvd_get(t.NVD_CVE_URL, {"cveId": "CVE-2000-0002", "test": "limiter"}, None)
+    assert used == ["keyed", "keyless"]
+    assert (t._nvd_keyed_limiter._max_calls, t._nvd_keyless_limiter._max_calls) == (50, 5)
+
+
+def test_nvd_responses_are_summarised_before_caching(monkeypatch):
+    raw_cve = {
+        "id": "CVE-2000-0003", "vulnStatus": "Analyzed", "published": "2000-01-01T00:00", "sourceIdentifier": "x",
+        "descriptions": [{"lang": "es", "value": "otro"}, {"lang": "en", "value": "nginx bug " + "a" * 5000}],
+        "references": [{"url": f"https://example.com/{i}", "source": "s", "tags": ["Patch"]} for i in range(100)],
+        "metrics": {"cvssMetricV31": [{"type": "Primary", "cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}],
+                    "cvssMetricV2": [{"type": "Primary", "cvssData": {"baseScore": 7.5}}]},
+        "configurations": [{"nodes": [{"operator": "OR", "cpeMatch": [
+            {"vulnerable": True, "criteria": NGINX, "versionEndExcluding": "1.20.1", "matchCriteriaId": "id"},
+            {"vulnerable": False, "criteria": "cpe:2.3:o:linux:linux_kernel:*:*:*:*:*:*:*:*"}]}]}],
+    }
+
+    class Resp:
+        status_code, headers = 200, {}
+
+        @staticmethod
+        def json():
+            return {"totalResults": 1, "format": "NVD_CVE", "vulnerabilities": [{"cve": raw_cve}]}
+
+    monkeypatch.setattr(t, "_http_get", lambda *a, **k: Resp())
+    monkeypatch.setattr(t._RateLimiter, "wait", lambda self: None)
+    data = t._nvd_get(t.NVD_CVE_URL, {"cveId": "CVE-2000-0003", "test": "summary"}, None)
+    cve = data["vulnerabilities"][0]["cve"]
+    assert set(data) == {"totalResults", "vulnerabilities", "products"}
+    assert len(cve["references"]) == t.NVD_MAX_REFERENCES and "source" not in cve["references"][0]
+    assert len(cve["descriptions"][0]["value"]) == t.NVD_MAX_DESCRIPTION
+    assert list(cve["metrics"]) == ["cvssMetricV31"] and "sourceIdentifier" not in cve
+    assert cve["configurations"][0]["nodes"][0]["cpeMatch"] == [
+        {"vulnerable": True, "criteria": NGINX, "versionEndExcluding": "1.20.1"}]
+    # The tools reach the same conclusions from the summary as from the raw record.
+    assert t.summarize_nvd_cve(cve) == t.summarize_nvd_cve(raw_cve)
+    assert t.assess_cve_for_version(cve, "*", "nginx", "1.20.0") == t.assess_cve_for_version(raw_cve, "*", "nginx", "1.20.0")
+
+
+def test_ttl_cache_enforces_byte_budget():
+    cache = t._TTLCache(ttl_seconds=60, maxsize=10, max_bytes=100)
+    cache.set("a", 1, size=40)
+    cache.set("b", 2, size=40)
+    cache.set("c", 3, size=40)  # evicts the oldest entry to stay within 100 bytes
+    assert (cache.get("a"), cache.get("b"), cache.get("c")) == (None, 2, 3)
+    cache.set("huge", 4, size=101)
+    assert cache.get("huge") is None and cache.get("c") == 3
+    cache.set("b", 5, size=10)  # replacing an entry releases its old size
+    assert cache._bytes == 50
+
+
+def test_server_key_quota_enforces_total_and_per_client_caps():
+    quota = t.ServerKeyQuota()
+    assert quota.acquire("a", total_limit=2, client_limit=1) == 0
+    assert quota.acquire("a", total_limit=2, client_limit=1) >= 1  # same visitor
+    assert quota.acquire("b", total_limit=2, client_limit=1) == 0
+    assert quota.acquire("c", total_limit=2, client_limit=1) >= 1  # process-wide cap
+    quota.reset()
+    assert quota.acquire("c", total_limit=2, client_limit=1) == 0
 
 
 @pytest.mark.parametrize("value, expected", [

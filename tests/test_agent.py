@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 import ai
 from osint_tools import ApiKeys
 
@@ -124,6 +126,57 @@ def test_report_markdown_is_sanitized():
     assert "docs (https://nvd.nist.gov)" in text
     assert "javascript" not in text
     assert r"\$5" in text
+
+
+def _live_brackets(text):
+    """Positions of '[', ']' or '<' that Markdown would still parse (not backslash-escaped)."""
+    live, i = [], 0
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] in "[]<":
+            live.append(i)
+        i += 1
+    return live
+
+
+@pytest.mark.parametrize("payload", [
+    "![r]\n\n[r]: https://evil.example/p.png",                   # shortcut reference image + definition
+    "![r][]\n\n[r]: https://evil.example/p.png",                 # collapsed reference image
+    "![a][r]\n\n[r]: https://evil.example/p.png",                # full reference image
+    "![multi\nline](https://evil.example/p.png)",                # newline in alt text
+    "![x](\nhttps://evil.example/p.png)",                        # newline after "("
+    "![" + "a" * 600 + "](https://evil.example/p.png)",          # alt text over the regex bound
+    "[NVD advisory][r]\n\n[r]: https://evil.example/phish",      # reference link hiding its destination
+    "[NVD advisory]\n\n[nvd advisory]: https://evil.example/x",  # shortcut reference link
+    "<img src=https://evil.example/p.png>",                      # raw HTML (matters for the exported file)
+    "\\\\[a][r]\n\n[r]: https://evil.example/x",                  # escaped backslash before a reference link
+])
+def test_report_sanitizer_neutralises_every_image_and_link_form(payload):
+    text = ai.sanitize_report_markdown("## Findings\n" + payload)
+    assert _live_brackets(text) == []
+    assert text.startswith("## Findings\n")
+
+
+def test_report_sanitizer_keeps_safe_formatting():
+    report = "## Summary\n**High** risk\n\n| Finding | Severity |\n|---|---|\n| Open RDP | HIGH |\n- item"
+    assert ai.sanitize_report_markdown(report) == report
+    assert ai.sanitize_report_markdown("see [https://nvd.nist.gov](https://nvd.nist.gov)") == "see https://nvd.nist.gov"
+    assert ai.sanitize_report_markdown(r"already \[escaped\]") == r"already \[escaped\]"
+
+
+def test_markdown_export_escapes_banner_derived_software_names():
+    # The software name comes straight from a host's "Server:" header when Shodan's product field is empty.
+    hostile = "![x](https://evil.example/p.png)<img src=x>"
+    record = ai.ToolCallRecord("osint_shodan_search", {}, 0, "t", 1, {
+        "tool": "shodan", "success": True, "discovered_software": [{"name": hostile, "version": None}]})
+    result = ai.AgentResult(target=ai.classify_target("8.8.8.8"), report="![r]\n\n[r]: https://evil.example/q",
+                            complexity="Quick Scan", model="m", tool_calls=[record])
+    export = ai.build_markdown_export(ai.build_report_data(result))
+    footer = export.split("\n---\n", 1)[1]
+    assert "Software found: " + ai.escape_markdown(hostile) in footer
+    assert _live_brackets(export.split("## Key Facts", 1)[1]) == []
 
 
 def test_escape_markdown_neutralizes_formatting():
