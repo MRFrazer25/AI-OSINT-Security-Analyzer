@@ -70,9 +70,9 @@ def server_key_limits() -> tuple[int, int]:
 def server_keys() -> ApiKeys:
     """Keys configured by whoever runs the app (.env, environment, or Streamlit secrets).
 
-    With SHARE_SERVER_KEYS=false they are never used, so every visitor must bring their own keys.
+    They are used only when SHARE_SERVER_KEYS is true. Otherwise every visitor brings their own keys.
     """
-    if setting("SHARE_SERVER_KEYS", "true").strip().lower() in ("false", "0", "no", "off"):
+    if setting("SHARE_SERVER_KEYS", "false").strip().lower() not in ("true", "1", "yes", "on"):
         return ApiKeys()
     return ApiKeys.from_env().with_overrides(**{name: setting(env) for name, (_, env, _, _) in KEY_FIELDS.items()})
 

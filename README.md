@@ -84,7 +84,7 @@ Keys in `.env` or Streamlit secrets are available to every visitor of that proce
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `SHARE_SERVER_KEYS` | `true` | Set `false` so server keys are never used and every visitor must enter their own. |
+| `SHARE_SERVER_KEYS` | `false` | Set `true` to let visitors use the server's keys, up to the hourly caps below. |
 | `SERVER_KEY_RUNS_PER_HOUR` | `20` | Process-wide analyses that may consume the server's keys. |
 | `SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR` | `5` | Per-visitor cap (best-effort client address; the process-wide cap is the real guard). |
 
@@ -100,7 +100,7 @@ These apply only when an analysis uses a server-provided key. A visitor who ente
 
 ## Security and privacy
 
-* **Per-session API keys:** keys entered in the UI live only in that user's Streamlit session. They are never written to environment variables or disk, and never shared between users of a deployment. Keys configured on the server are never sent to the browser. Shared server keys can be withheld (`SHARE_SERVER_KEYS=false`) or capped per hour so one visitor cannot drain the operator's quota.
+* **Per-session API keys:** keys entered in the UI live only in that user's Streamlit session. They are never written to environment variables or disk, and never shared between users of a deployment. Keys configured on the server are never sent to the browser, and are not used unless `SHARE_SERVER_KEYS=true`. When sharing is on, hourly caps stop one visitor from draining the operator's quota.
 * **Safe rendering:** the report includes third-party text (banners, descriptions), so it is rendered as Markdown only. Raw HTML is not rendered. Remaining `[`, `]` and `<` in the model's write-up are escaped so reference images, hidden links and HTML cannot survive, and third-party software names in the Markdown export are escaped the same way as on screen.
 * **Prompt-injection hardening:** tool output is treated as untrusted data and kept inside escaped data blocks. Results are size-capped before they reach the model, and the model can't override server-side limits through tool arguments.
 * **Input validation:** CVE IDs, domains and IPs are validated before any API call, and query parameters are URL-encoded.

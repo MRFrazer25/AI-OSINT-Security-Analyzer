@@ -92,9 +92,8 @@ def fake_agent(monkeypatch):
     return runs
 
 
-def test_server_keys_can_be_withheld_from_visitors(monkeypatch, fake_agent):
+def test_server_keys_are_not_shared_unless_enabled(monkeypatch, fake_agent):
     monkeypatch.setenv("COHERE_API_KEY", "server-key")
-    monkeypatch.setenv("SHARE_SERVER_KEYS", "false")
     at = _session()
     _analyse(at)
     assert any("Cohere API key is required" in e.value for e in at.error)
@@ -103,6 +102,7 @@ def test_server_keys_can_be_withheld_from_visitors(monkeypatch, fake_agent):
 
 def test_server_key_runs_are_limited_across_sessions(monkeypatch, fake_agent):
     monkeypatch.setenv("COHERE_API_KEY", "server-key")
+    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
     monkeypatch.setenv("SERVER_KEY_RUNS_PER_HOUR", "1")
     monkeypatch.setenv("SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR", "1")
     first, second = _session(), _session()  # separate browser sessions, so the per-session cooldown doesn't apply
