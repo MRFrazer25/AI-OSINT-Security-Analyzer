@@ -1,0 +1,10 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.streamlit/secrets.toml
+.pytest_cache
+.ruff_cache
+.cursor
