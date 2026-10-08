@@ -4,6 +4,8 @@ An AI agent that investigates IP addresses, domains, CVEs and software versions 
 
 **Live demo:** [osint-ai.streamlit.app](https://osint-ai.streamlit.app)
 
+![Security report for scanme.nmap.org, showing the key facts box, CISA KEV matches and the AI executive summary](docs/screenshot.png)
+
 ## Features
 
 * **Agentic investigation:** the model plans and chains tool calls based on what it finds, within a per-run budget.
