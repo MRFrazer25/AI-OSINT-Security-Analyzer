@@ -895,6 +895,9 @@ def resolve_domain(domain: str) -> Dict[str, Any]:
 
 _CDN_NAMES = ("cloudflare", "akamai", "fastly", "cloudfront", "edgecast", "stackpath", "bunny", "sucuri",
               "incapsula", "imperva")
+# Akamai bought Linode, so Linode servers report as "Akamai Connected Cloud". Those are ordinary cloud
+# servers whose ports the customer controls, not CDN edges.
+_CLOUD_HOSTING_NAMES = ("akamai connected cloud", "linode")
 
 
 def _banner_server_header(banner: str) -> Optional[str]:
@@ -1049,7 +1052,8 @@ def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> 
                  "without changing the version string, so banner-based findings need verification."),
     }
     org = f"{host.get('org') or ''} {host.get('isp') or ''}".lower()
-    if "cdn" in (host.get("tags") or []) or any(c in org for c in _CDN_NAMES):
+    cdn_by_name = any(c in org for c in _CDN_NAMES) and not any(c in org for c in _CLOUD_HOSTING_NAMES)
+    if "cdn" in (host.get("tags") or []) or cdn_by_name:
         result["cdn_note"] = ("This IP belongs to a CDN/edge network shared by many customers. Its open ports and "
                               "services are the CDN's, not the origin server's; the site owner can't close them "
                               "and they are not findings about the target.")

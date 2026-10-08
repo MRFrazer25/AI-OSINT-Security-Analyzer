@@ -240,17 +240,24 @@ def test_cve_search_drops_substring_only_matches(monkeypatch):
     assert result["success"] is False and "only inside other words" in result["info"]
 
 
-def test_shodan_flags_cdn_ips(monkeypatch):
+@pytest.mark.parametrize("host,is_cdn", [
+    ({"org": "Cloudflare, Inc.", "tags": ["cdn"]}, True),
+    ({"org": "Akamai Technologies, Inc.", "isp": "Akamai Technologies"}, True),
+    # Real miss: scanme.nmap.org is a Linode server, reported as Akamai, and was called a CDN edge.
+    ({"org": "Linode", "isp": "Akamai Connected Cloud", "tags": ["cloud"]}, False),
+    ({"org": "Akamai Connected Cloud", "isp": "Akamai Connected Cloud"}, False),
+])
+def test_shodan_flags_cdn_ips(monkeypatch, host, is_cdn):
     class FakeShodan:
         def __init__(self, key):
             pass
 
         def host(self, ip):
-            return {"org": "Cloudflare, Inc.", "tags": ["cdn"], "data": []}
+            return {**host, "data": []}
 
     monkeypatch.setattr(t.shodan, "Shodan", FakeShodan)
     monkeypatch.setattr(t, "kev_matches_for_software", lambda names: {})
-    assert "cdn_note" in t.osint_shodan_search("8.8.8.8", t.ApiKeys(shodan="k"))
+    assert ("cdn_note" in t.osint_shodan_search("8.8.8.8", t.ApiKeys(shodan="k"))) is is_cdn
 
 
 def test_kev_matching_handles_numbered_product_names():
