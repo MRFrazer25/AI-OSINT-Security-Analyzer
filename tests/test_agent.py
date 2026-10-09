@@ -159,6 +159,13 @@ def test_report_sanitizer_neutralises_every_image_and_link_form(payload):
     assert text.startswith("## Findings\n")
 
 
+def test_report_sanitizer_drops_cohere_citation_tags():
+    # Real leak: a key-findings row ended with "</co: 0:[0]>" in a CVE-2021-44228 report
+    text = ai.sanitize_report_markdown("| <co: 0:[0]>Affects Log4j 2.0-beta9 through 2.15.0</co: 0:[0]> | Medium |")
+    assert text == "| Affects Log4j 2.0-beta9 through 2.15.0 | Medium |"
+    assert ai.sanitize_report_markdown("<company> <script>") == r"\<company> \<script>"  # Other tags still escaped
+
+
 def test_report_sanitizer_keeps_safe_formatting():
     report = "## Summary\n**High** risk\n\n| Finding | Severity |\n|---|---|\n| Open RDP | HIGH |\n- item"
     assert ai.sanitize_report_markdown(report) == report

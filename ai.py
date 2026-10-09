@@ -239,6 +239,8 @@ _MD_IMAGE = re.compile(r"!\[([^\]\n]{0,500})\]\(([^)\n]{0,2000})\)")
 _MD_LINK = re.compile(r"\[([^\]\n]{1,500})\]\(([^)\n]{0,2000})\)")
 # An existing escape pair is kept as is, so "\\[" can't turn into an escaped backslash followed by a live "[".
 _MD_REPORT_ESCAPE = re.compile(r"\\.|[\[\]<$]")
+# Cohere sometimes wraps cited text in citation tags like <co: 0:[0]>...</co: 0:[0]>; only the tags are dropped
+_COHERE_CITATION_TAG = re.compile(r"</?co(?::[^<>\n]{0,100})?>", re.IGNORECASE)
 _MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>$~])")
 
 
@@ -252,7 +254,8 @@ def sanitize_report_markdown(text: str) -> str:
     escaped, so no image, link, reference definition or HTML tag of any form survives;
     '$' is escaped so it isn't parsed as LaTeX. Headings, lists, tables and emphasis still render.
     """
-    text = _MD_IMAGE.sub(lambda m: f"(image removed: {m.group(1)})", text or "")
+    text = _COHERE_CITATION_TAG.sub("", text or "")
+    text = _MD_IMAGE.sub(lambda m: f"(image removed: {m.group(1)})", text)
 
     def link(m: re.Match) -> str:
         parts = m.group(2).split()
