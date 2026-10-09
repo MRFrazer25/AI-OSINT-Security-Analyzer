@@ -190,14 +190,17 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
         save_col, clear_col = st.columns([1, 1])
         saved = save_col.form_submit_button("Save keys", type="primary")
         cleared = clear_col.form_submit_button("Clear my keys")
+    # Always reserve the message slot, so the status row below keeps its position between reruns.
+    # Otherwise Streamlit leaves a faded copy of the old row on screen while an analysis runs.
+    key_message = st.empty()
     if saved:
         for name, value in entered.items():
             if value.strip():
                 st.session_state.user_keys[name] = value.strip()
-        st.success("Keys saved for this session.")
+        key_message.success("Keys saved for this session.")
     if cleared:
         st.session_state.user_keys = {}
-        st.info("Session keys cleared.")
+        key_message.info("Session keys cleared.")
 
     keys_now = effective_keys()
     status_cols = st.columns(len(KEY_FIELDS))
