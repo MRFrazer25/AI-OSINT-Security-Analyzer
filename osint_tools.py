@@ -1191,7 +1191,7 @@ def osint_abuseipdb_check(ip_address: str, keys: ApiKeys, max_age_days: int = 90
         "tool": "abuseipdb",
         "success": True,
         "ip": ip_address,
-        "abuse_confidence_score": score,
+        "abuse_confidence_percent": score,  # 0-100; the name keeps the model from reading 9 as 9/10
         "threat_level": level,
         "total_reports": data.get("totalReports", 0),
         "distinct_reporters": data.get("numDistinctUsers", 0),

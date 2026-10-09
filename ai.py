@@ -599,7 +599,7 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
             add("VirusTotal", f"{r['malicious']} malicious, {r['suspicious']} suspicious of "
                               f"{r['total_engines']} engines ({r['threat_level']})")
         elif tool == "abuseipdb":
-            add("AbuseIPDB", f"confidence {r['abuse_confidence_score']}%, {r['total_reports']} reports "
+            add("AbuseIPDB", f"confidence {r['abuse_confidence_percent']}%, {r['total_reports']} reports "
                              f"in {r['report_window_days']} days ({r['threat_level']})")
         elif tool == "version_check" and r.get("version"):
             top = ", ".join(f"{v['cve_id']} ({v['severity']})" for v in r.get("affected_cves", [])[:3])
