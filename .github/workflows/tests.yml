@@ -30,7 +30,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest pip-audit
+          pip install -r requirements.txt pytest==9.1.1 pip-audit==2.10.1
+
+      # Catches real bugs only (syntax errors, undefined names), not style
+      - name: Lint (ruff)
+        run: |
+          pip install ruff==0.16.10
+          ruff check --select E9,F63,F7,F82 .
 
       - name: Tests
         run: python -m pytest -q
