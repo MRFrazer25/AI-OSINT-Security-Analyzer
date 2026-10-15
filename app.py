@@ -11,7 +11,7 @@ import streamlit as st
 
 from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_markdown_export, build_report_data,
                 escape_markdown, run_osint_agent, sanitize_report_markdown)
-from osint_tools import KEY_SIGNUP_URLS, ApiKeys, classify_target, server_key_quota, validate_public_ip
+from osint_tools import KEY_SIGNUP_URLS, ApiKeys, classify_target, server_key_quota
 
 try:
     from dotenv import load_dotenv
@@ -77,13 +77,24 @@ def server_keys() -> ApiKeys:
     return ApiKeys.from_env().with_overrides(**{name: setting(env) for name, (_, env, _, _) in KEY_FIELDS.items()})
 
 
+# Keys whose use costs the operator quota or money. A shared NVD key only raises NVD's rate limit,
+# so it doesn't count toward the shared-key quota.
+QUOTA_KEYS = ("cohere", "shodan", "virustotal", "abuseipdb")
+
+
 def client_id() -> str:
-    """Best-effort visitor address for the per-client limit (the process-wide limit is the real guard)."""
+    """Best-effort visitor address for the per-client limit (the process-wide limit is the real guard).
+
+    X-Forwarded-For is client-controlled unless a proxy you run rewrites it, so it is only read when the
+    operator sets TRUSTED_PROXY_HOPS to the number of proxies in front of the app. Each proxy appends the
+    address it saw, so the client is that many entries from the end.
+    """
     address = st.context.ip_address or ""
-    if not validate_public_ip(address)[0]:
-        # Behind a reverse proxy the peer is the proxy; use the address it appended last.
-        forwarded = (st.context.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
-        address = forwarded or address
+    hops = int_setting("TRUSTED_PROXY_HOPS", 0)
+    if hops:
+        forwarded = [a.strip() for a in (st.context.headers.get("X-Forwarded-For") or "").split(",") if a.strip()]
+        if len(forwarded) >= hops:
+            address = forwarded[-hops]
     return address or "local"
 
 
@@ -168,10 +179,13 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
         "Keys you enter are kept only in this browser session's server-side memory. They are never written "
         "to disk or shared with other users, and they are cleared when the session ends."
     )
-    if any(getattr(server, n) for n in KEY_FIELDS):
+    if any(getattr(server, n) for n in QUOTA_KEYS):
         total_limit, client_limit = server_key_limits()
-        st.caption(f"Keys provided by this deployment are shared by all visitors and limited to {total_limit} "
-                   f"analyses per hour ({client_limit} per visitor). Add your own keys to avoid the limit.")
+        if total_limit and client_limit:
+            st.caption(f"Keys provided by this deployment are shared by all visitors and limited to {total_limit} "
+                       f"analyses per hour ({client_limit} per visitor). Add your own keys to avoid the limit.")
+        else:
+            st.caption("Analyses with this deployment's keys are switched off. Add your own keys to run one.")
     with st.form("api_keys_form", clear_on_submit=True):
         cols = st.columns(2)
         entered = {}
@@ -239,7 +253,8 @@ if run_clicked:
     target = classify_target(target_input)
     keys = effective_keys()
     wait = RUN_COOLDOWN_SECONDS - (time.time() - st.session_state.last_run)
-    uses_server_keys = any(getattr(server, n) and not st.session_state.user_keys.get(n) for n in KEY_FIELDS)
+    uses_server_keys = any(getattr(server, n) and not st.session_state.user_keys.get(n) for n in QUOTA_KEYS)
+    visitor = client_id()
     if target.type == "invalid":
         st.error(target.error)
     elif not keys.cohere:
@@ -247,9 +262,13 @@ if run_clicked:
                  "then add it under API Keys Configuration.")
     elif wait > 0:
         st.warning(f"Please wait {int(wait) + 1}s before starting another analysis.")
-    elif uses_server_keys and (quota_wait := server_key_quota().acquire(client_id(), *server_key_limits())):
-        st.warning(f"This deployment's shared API keys have reached their hourly limit. Try again in about "
-                   f"{int(quota_wait // 60) + 1} min, or add your own keys under API Keys Configuration.")
+    elif uses_server_keys and (quota_wait := server_key_quota().acquire(visitor, *server_key_limits())):
+        if quota_wait == float("inf"):
+            st.warning("This deployment doesn't allow analyses with its shared API keys. "
+                       "Add your own keys under API Keys Configuration.")
+        else:
+            st.warning(f"This deployment's shared API keys have reached their hourly limit. Try again in about "
+                       f"{int(quota_wait // 60) + 1} min, or add your own keys under API Keys Configuration.")
     else:
         st.session_state.last_run = time.time()
         missing = [key_link(n) for n in ("shodan", "virustotal", "abuseipdb") if not getattr(keys, n)]
@@ -273,6 +292,9 @@ if run_clicked:
                     status.write("Writing the final report...")
 
             result = run_osint_agent(target.value, keys, complexity_level, on_event=on_event, model=model_choice)
+            if uses_server_keys and result.error and not result.tool_calls:
+                # Failed before any lookup (e.g. the Cohere key was rejected): don't charge the shared quota.
+                server_key_quota().release(visitor)
             if result.error:
                 status.update(label=f"Analysis finished with an error: {escape_markdown(result.error)}",
                               state="error")

@@ -82,15 +82,16 @@ The tests run offline. They cover target validation, version comparison (includi
 
 ### Sharing server keys on a deployment
 
-Keys in `.env` or Streamlit secrets are available to every visitor of that process. On a public app, either require visitors to bring their own keys or keep the hourly caps:
+Keys in `.env` or Streamlit secrets stay on the server. Visitors can only use them if you turn sharing on, and then hourly caps apply:
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `SHARE_SERVER_KEYS` | `false` | Set `true` to let visitors use the server's keys, up to the hourly caps below. |
-| `SERVER_KEY_RUNS_PER_HOUR` | `20` | Process-wide analyses that may consume the server's keys. |
-| `SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR` | `5` | Per-visitor cap (best-effort client address; the process-wide cap is the real guard). |
+| `SERVER_KEY_RUNS_PER_HOUR` | `20` | Process-wide analyses that may consume the server's keys. `0` switches shared-key analyses off. |
+| `SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR` | `5` | Per-visitor cap (best-effort client address; the process-wide cap is the real guard). `0` switches shared-key analyses off. |
+| `TRUSTED_PROXY_HOPS` | `0` | Number of proxies you run in front of the app. When set, the visitor's address is read from `X-Forwarded-For`; otherwise that header is ignored, because clients can forge it. |
 
-These apply only when an analysis uses a server-provided key. A visitor who enters their own keys is not counted. There is still a 15-second per-session cooldown between runs. The same names can be set in `.streamlit/secrets.toml`.
+These apply only when an analysis uses a server-provided Cohere, Shodan, VirusTotal or AbuseIPDB key. A shared NVD key doesn't count (it only raises NVD's rate limit), and a visitor who enters their own keys isn't counted. Analyses that fail before making any lookup give their slot back. There is still a 15-second per-session cooldown between runs. The same names can be set in `.streamlit/secrets.toml`.
 
 ## How it works
 

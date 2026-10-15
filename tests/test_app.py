@@ -13,7 +13,8 @@ APP = str(Path(__file__).resolve().parent.parent / "app.py")
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for var in ("COHERE_API_KEY", "SHODAN_API_KEY", "VIRUSTOTAL_API_KEY", "VT_API_KEY", "ABUSEIPDB_API_KEY",
-                "NVD_API_KEY", "SHARE_SERVER_KEYS", "SERVER_KEY_RUNS_PER_HOUR", "SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR"):
+                "NVD_API_KEY", "SHARE_SERVER_KEYS", "SERVER_KEY_RUNS_PER_HOUR", "SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR",
+                "TRUSTED_PROXY_HOPS"):
         monkeypatch.delenv(var, raising=False)
     t.server_key_quota().reset()
 
@@ -120,3 +121,46 @@ def test_own_keys_bypass_the_server_key_limit(monkeypatch, fake_agent):
     at.session_state["user_keys"] = {"cohere": "my-own-key"}
     _analyse(at)
     assert len(fake_agent) == 1 and fake_agent[0].cohere == "my-own-key"
+
+
+def test_shared_nvd_key_alone_does_not_use_the_quota(monkeypatch, fake_agent):
+    # A shared NVD key only raises NVD's rate limit; it must not block visitors who bring their own keys.
+    monkeypatch.setenv("NVD_API_KEY", "server-nvd")
+    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
+    monkeypatch.setenv("SERVER_KEY_RUNS_PER_HOUR", "0")
+    at = _session()
+    at.session_state["user_keys"] = {"cohere": "my-own-key"}
+    _analyse(at)
+    assert len(fake_agent) == 1 and fake_agent[0].nvd == "server-nvd"
+    assert not at.warning
+
+
+def test_zero_limit_switches_shared_keys_off(monkeypatch, fake_agent):
+    monkeypatch.setenv("COHERE_API_KEY", "server-key")
+    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
+    monkeypatch.setenv("SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR", "0")
+    at = _session()
+    _analyse(at)
+    assert fake_agent == []
+    assert any("doesn't allow analyses with its shared API keys" in w.value for w in at.warning)
+
+
+def test_runs_that_fail_before_any_lookup_do_not_use_the_quota(monkeypatch):
+    import ai
+
+    calls = []
+
+    def failing_run(target, keys, complexity, on_event=None, model=None):
+        calls.append(target)
+        result = ai.AgentResult(target=ai.classify_target(target), report="", complexity=complexity, model="m")
+        result.error = "Cohere rejected the API key."
+        return result
+
+    monkeypatch.setattr(ai, "run_osint_agent", failing_run)
+    monkeypatch.setenv("COHERE_API_KEY", "revoked-key")
+    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
+    monkeypatch.setenv("SERVER_KEY_RUNS_PER_HOUR", "1")
+    first, second = _session(), _session()
+    _analyse(first)
+    _analyse(second)
+    assert len(calls) == 2  # the failed first run gave its slot back

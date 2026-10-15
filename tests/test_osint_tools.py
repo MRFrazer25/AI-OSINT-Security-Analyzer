@@ -431,3 +431,14 @@ def test_software_parsing_is_fast_on_hostile_input():
     t.split_software_version("a" + " " * 20000 + "!")
     t.split_software_version("a\t9" + ".0" * 10000 + "!")
     assert time.perf_counter() - start < 1.0
+
+
+def test_server_key_quota_zero_limit_and_release():
+    quota = t.ServerKeyQuota()
+    assert quota.acquire("a", total_limit=0, client_limit=5) == float("inf")
+    assert quota.acquire("a", total_limit=5, client_limit=0) == float("inf")
+    assert quota.acquire("a", total_limit=1, client_limit=1) == 0
+    assert quota.acquire("b", total_limit=1, client_limit=1) >= 1
+    quota.release("a")
+    assert quota.acquire("b", total_limit=1, client_limit=1) == 0
+    quota.release("nobody")  # no-op

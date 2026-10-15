@@ -177,7 +177,13 @@ class ServerKeyQuota:
             self._runs.clear()
 
     def acquire(self, client: str, total_limit: int, client_limit: int) -> float:
-        """Record a run and return 0, or return the seconds until one is allowed."""
+        """Record a run and return 0, or return the seconds until one is allowed.
+
+        A limit of 0 means shared-key analyses are switched off, and returns infinity rather than a
+        wait that would never end.
+        """
+        if total_limit <= 0 or client_limit <= 0:
+            return float("inf")
         with self._lock:
             now = time.monotonic()
             while self._runs and now - self._runs[0][0] >= SERVER_KEY_WINDOW_SECONDS:
@@ -191,6 +197,14 @@ class ServerKeyQuota:
                 self._runs.append((now, client))
                 return 0.0
             return max(1.0, SERVER_KEY_WINDOW_SECONDS - (now - oldest))
+
+    def release(self, client: str) -> None:
+        """Give back this client's most recent run (for analyses that failed before using any shared key)."""
+        with self._lock:
+            for i in range(len(self._runs) - 1, -1, -1):
+                if self._runs[i][1] == client:
+                    del self._runs[i]
+                    return
 
 
 _server_key_quota = ServerKeyQuota()
