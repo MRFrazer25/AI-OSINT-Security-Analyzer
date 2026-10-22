@@ -169,9 +169,10 @@ def test_shodan_without_a_key_falls_back_to_internetdb(monkeypatch):
     r = t.osint_shodan_search("45.33.32.156", t.ApiKeys())
     assert seen == ["https://internetdb.shodan.io/45.33.32.156"]
     assert r["success"] and r["data_source"].startswith("Shodan InternetDB") and r["open_ports"] == [22, 80]
-    # The vendor is kept, so "http server" can't match other vendors' HTTP servers in KEV; OS CPEs are skipped.
+    # The vendor is kept, so "http server" can't match other vendors' HTTP servers in KEV; OS CPEs are kept apart.
     assert [(s["name"], s["version"]) for s in r["discovered_software"]] == [
         ("apache http server", "2.4.7"), ("openbsd openssh", "6.6.1p1")]
+    assert r["operating_system"] == "canonical ubuntu linux" and "backports" in r["backport_note"]
     assert r["shodan_inferred_cves"] == ["CVE-2014-0226"] and "key_hint" in r
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(404, {"detail": "No information available"}))
     assert t.osint_shodan_search("45.33.32.156", t.ApiKeys())["success"] is False

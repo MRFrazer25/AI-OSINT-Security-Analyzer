@@ -652,6 +652,10 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
                   for s in r.get("discovered_software", [])]
             if sw:
                 add("Software (Shodan InternetDB)", ", ".join(sw))
+            if r.get("operating_system"):
+                add("Operating system (Shodan InternetDB)", r["operating_system"]
+                    + ("; it backports fixes, so version-matched CVEs may already be fixed (no banners to check)"
+                       if r.get("backport_note") else ""))
             for match in (r.get("cisa_kev_product_matches") or {}).values():
                 for e in match.get("entries", []):
                     kev_lines.setdefault(e["cve_id"], f"{e['cve_id']}{_fmt_epss(e)}")

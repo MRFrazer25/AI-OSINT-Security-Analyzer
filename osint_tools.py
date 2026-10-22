@@ -1331,6 +1331,10 @@ def _cdn_note(org: str, tags: Sequence[str]) -> Optional[str]:
     return None
 
 
+# Distributions that backport security fixes without changing the upstream version (names as CPEs spell them).
+_BACKPORTING_DISTROS = ("ubuntu", "debian", "red hat", "redhat", "centos", "rocky", "almalinux", "suse", "oracle linux")
+
+
 def _internetdb_host(ip_address: str) -> Dict[str, Any]:
     """Shodan's free InternetDB: ports, software (CPEs), hostnames, tags and CVEs for an IP. No key, no banners."""
     try:
@@ -1349,8 +1353,12 @@ def _internetdb_host(ip_address: str) -> Dict[str, Any]:
         return {"tool": "shodan", "error": "Shodan InternetDB returned an unexpected response"}
 
     software: List[Dict[str, Any]] = []
+    systems: List[str] = []
     for cpe in data.get("cpes") or []:
         parts = str(cpe).split(":")  # cpe:/a:vendor:product[:version]; "/o" entries are operating systems
+        if len(parts) >= 4 and parts[1] == "/o":
+            systems.append(_clean_banner(f"{parts[2]} {parts[3]}".replace("_", " "), 80))
+            continue
         if len(parts) < 4 or parts[1] not in ("/a", "/h"):
             continue
         vendor, product = parts[2].replace("_", " "), parts[3].replace("_", " ")
@@ -1377,6 +1385,13 @@ def _internetdb_host(ip_address: str) -> Dict[str, Any]:
                  "no banners, organisation or OS details, so services and distro packages can't be checked further. "
                  "Add SHODAN_API_KEY for full results."),
     }
+    if systems:
+        result["operating_system"] = ", ".join(dict.fromkeys(systems))
+        if software and any(d in result["operating_system"] for d in _BACKPORTING_DISTROS):
+            result["backport_note"] = (f"The OS is {result['operating_system']}, which backports security fixes "
+                                       "without changing version numbers, so NVD matches on these software "
+                                       "versions may already be fixed. A Shodan key shows the package versions "
+                                       "needed for osint_distro_patch_check.")
     cdn = _cdn_note("", tags)
     if cdn:
         result["cdn_note"] = cdn
