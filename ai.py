@@ -159,6 +159,7 @@ Rules:
 - EPSS scores are included in tool results where available; quote them for the CVEs you discuss, using the "percent" value as written.
 - Give each AFFECTED CVE's patch_status. "NVD lists no fixed version" does not mean no patch exists: say to check the vendor advisory, and never write "no patch available" unless a source says so.
 - CVEs with recently_added_to_kev were added to CISA KEV in the last 30 days: call them out as newly exploited, with days_in_kev.
+- Needs Review can include recent CVEs NVD hasn't analysed yet (reason "not analysed by NVD yet"). List them, quote what their description says about versions, and say NVD hasn't confirmed them. description_covers_this_version means the CVE's own text names a range that includes this version. If a version check has no_candidates_note, never call the version safe: say NVD has no records yet and to check the vendor's advisories.
 - Counts such as affected_count and open_in_package_count cover every CVE, but lists can be shortened (lists_shortened, open_in_package_shown). Say how many are listed out of the total instead of implying the list is complete.
 - Call tools only with real names from the evidence (e.g. "Dahua Rtsp Server", "nginx"); never placeholders like "all" or "unknown".
 - Exposure is a finding in itself. Internet-facing cameras/DVRs/NVRs, IoT devices, remote-admin or management interfaces (RDP, VNC, Telnet, SSH, SMB, databases, vendor protocols such as Dahua 37777/Hikvision 8000) and login pages raise risk even with a clean reputation and no version-confirmed CVE. Rate overall risk on exposure plus exploit history, not only on confirmed CVEs.
@@ -720,9 +721,18 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
                     f"{patch.get('fix_listed', 0)} of {r['affected_count']} affected CVEs have a fixed version in NVD"
                     + (f"; {len(no_fix)} list no fixed version, so upgrading may not cover them (check the vendor "
                        f"advisory): {', '.join(no_fix[:5])}" if no_fix else ""))
+            recent = [v for v in r.get("needs_review_cves", []) or [] if "not analysed by NVD yet" in str(v.get("reason"))]
+            if recent:
+                add(f"Recent CVEs NVD hasn't analysed yet: {r['software']} {r['version']}",
+                    ", ".join(f"{v['cve_id']}" + (" (its description says this version is affected)"
+                                                  if v.get("description_covers_this_version") else "") for v in recent[:6])
+                    + (f" and {r['needs_review_count'] - len(recent)} more" if r.get("needs_review_count", 0) > len(recent) else ""))
+            if r.get("no_candidates_note") and not recent:
+                add(f"NVD coverage: {r['software']} {r['version']}", r["no_candidates_note"])
             upgrade = r.get("upgrade_to_at_least")
             if isinstance(upgrade, dict) and upgrade.get("text"):
                 add(f"Upgrade {r['software']} to", upgrade["text"] + (f" ({upgrade['note']})" if upgrade.get("note") else "")
+                    + (f". {upgrade['review_note']}" if upgrade.get("review_note") else "")
                     + ("; this is the upstream release, while distro packages get fixes as package updates"
                        if has_distro_check else ""))
         elif tool == "distro_patch_check":

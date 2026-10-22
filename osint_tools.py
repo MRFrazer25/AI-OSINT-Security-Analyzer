@@ -574,8 +574,19 @@ def assess_cve_for_version(cve: Dict[str, Any], vendor: str, product: str, versi
                 verdict["fixed_after"] = match["versionEndIncluding"]
             verdict["patch_status"] = patch_status(verdict)
             return verdict
+    def nearness(match: Dict[str, Any]) -> int:
+        """How many leading version parts a range's bounds share with ``version``."""
+        wanted = _version_tokens(version)
+        best = 0
+        for key in ("versionStartIncluding", "versionStartExcluding", "versionEndIncluding", "versionEndExcluding"):
+            bound = _version_tokens(match.get(key) or "")
+            shared = next((i for i, (a, b) in enumerate(zip(wanted, bound)) if a != b), min(len(wanted), len(bound)))
+            best = max(best, shared)
+        return best
+
+    nearest = sorted(relevant_matches, key=nearness, reverse=True)
     return {"status": "NOT_AFFECTED", "reason": "Version is outside every affected range listed by NVD",
-            "affected_ranges": [_describe_range(m) for m in relevant_matches[:3]]}
+            "affected_ranges": [_describe_range(m) for m in nearest[:3]]}
 
 
 def patch_status(verdict: Dict[str, Any]) -> str:
@@ -881,11 +892,26 @@ def _kev_search_terms(software: str) -> List[set]:
     return [words] if words else []
 
 
+# CISA's product names where they differ from NVD's CPE product.
+_KEV_PRODUCT_NAMES = {"netscaler_application_delivery_controller": "netscaler", "netscaler_gateway": "netscaler gateway",
+                      "internet_information_services": "iis", "connect_secure": "connect secure"}
+
+
 def kev_matches_software(vuln: Dict[str, Any], software: str) -> bool:
     # Whole-word matching, so "log4j" matches CISA's "Log4j2" but "apache httpd" doesn't match "Apache Struts".
-    text = f"{vuln.get('vendorProject', '')} {vuln.get('product', '')}"
-    if any(mentions_whole_words(text, " ".join(sorted(term))) for term in _kev_search_terms(software)):
-        return True
+    vendor_field, product_field = str(vuln.get("vendorProject", "")), str(vuln.get("product", ""))
+    alias = resolve_cpe_alias(software)
+    if alias:
+        vendor, product = alias
+        product_words = _KEV_PRODUCT_NAMES.get(product, product.replace("_", " "))
+        # The product must be named in the product field, and the vendor anywhere in the entry.
+        if mentions_whole_words(product_field, product_words) and (
+                vendor == "*" or mentions_whole_words(f"{vendor_field} {product_field}", vendor)):
+            return True
+    else:
+        text = f"{vendor_field} {product_field}"
+        if any(mentions_whole_words(text, " ".join(sorted(term))) for term in _kev_search_terms(software)):
+            return True
     # Some KEV entries name only the vendor as the product (CVE-2021-40438 is "Apache" / "Apache"). For known
     # products, accept the vulnerability name instead, but only when the vendor also matches.
     alias = resolve_cpe_alias(software)
@@ -1328,6 +1354,7 @@ def kev_matches_for_software(names: Iterable[str], limit: int = 10) -> Dict[str,
                              **kev_age(v.get("dateAdded")),
                              "known_ransomware_use": v.get("knownRansomwareCampaignUse")}
                             for v in hits[:limit]],
+                **({"entries_shown": f"showing {limit} of {len(hits)}, most recent first"} if len(hits) > limit else {}),
             }
     _add_epss([e for m in matches.values() for e in m["entries"]])
     return matches
@@ -2099,7 +2126,9 @@ def osint_cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
         result["invalid_cve_ids"] = invalid
     if software:
         result["software_matches"] = {
-            name: {"total_kev_entries": software_totals[name], "most_recent": hits}
+            name: {"total_kev_entries": software_totals[name], "most_recent": hits,
+                   **({"shown": f"showing {len(hits)} of {software_totals[name]}"}
+                      if software_totals[name] > len(hits) else {})}
             for name, hits in software_matches.items()
         }
         result["software_note"] = ("Product-level KEV matches show that this product has had exploited flaws; "
@@ -2177,6 +2206,20 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
     except SourceError as exc:
         return {"tool": "version_check", "error": str(exc)}
 
+    recent_checked = True
+    try:
+        for cve in _recent_unanalyzed_cves(name, products, keys, seen):
+            seen.add(cve.get("id"))
+            entry = {**summarize_nvd_cve(cve, description_limit=400, reference_limit=0), "status": "UNANALYZED",
+                     "reason": ("Published recently and not analysed by NVD yet, so its affected versions aren't "
+                                "checked. Read the description to see whether this version is covered.")}
+            if _description_covers(_english_description(cve), version):
+                entry["description_covers_this_version"] = True
+            entry.pop("references", None)
+            unanalyzed.append(entry)
+    except SourceError:
+        recent_checked = False
+
     def sort_key(v: Dict[str, Any]) -> Tuple[float, str]:
         return (v.get("cvss_score") or 0.0, v.get("published") or "")
 
@@ -2209,7 +2252,9 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
         "affected_count": len(affected),
         "affected_by_severity": severity_counts,
         "affected_in_cisa_kev": [v["cve_id"] for v in affected if v.get("in_cisa_kev")],
-        "upgrade_to_at_least": minimum_safe_version(affected),
+        "upgrade_to_at_least": _upgrade_with_review_note(minimum_safe_version(affected), unanalyzed),
+        **({} if recent_checked else {"recent_cves_note": "The search for recent CVEs NVD hasn't analysed yet "
+                                                          "failed, so very new advisories may be missing."}),
         "patch_status_summary": {"fix_listed": len(affected) - len(no_fix), "no_fix_listed": len(no_fix)},
         "no_fix_listed_cves": no_fix,
         "affected_cve_ids": [v["cve_id"] for v in affected],  # every one, for osint_distro_patch_check
@@ -2242,6 +2287,67 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
             "Some CVEs only apply with specific modules, configurations, or platforms.",
         ],
     }
+
+
+_UNANALYZED_STATUSES = {"Received", "Awaiting Analysis", "Undergoing Analysis"}
+RECENT_CVE_DAYS = 90
+
+
+def _recent_unanalyzed_cves(name: str, products: List[Tuple[str, str]], keys: Optional[ApiKeys],
+                            seen: set) -> List[Dict[str, Any]]:
+    """Recent CVEs that mention the product but that NVD hasn't analysed (so they have no CPE data yet)."""
+    vendor, product = products[0]
+    words = product.replace("_", " ")
+    if " " not in words:
+        term = words  # "next.js", "gitlab", "php"
+    elif vendor != "*" and len(words.split()) <= 2 and vendor not in words:
+        term = f"{vendor} {words}"  # "apache http server"
+    else:
+        term = _DAEMON_SUFFIXES.sub("", normalize_software_name(name))  # long CPE names: use the user's words
+    _, cves = _nvd_most_recent({"keywordSearch": term}, keys, 40)
+    cutoff = datetime.now(timezone.utc).date().toordinal() - RECENT_CVE_DAYS
+    found = []
+    for cve in cves:
+        published = (cve.get("published") or "")[:10]
+        try:
+            recent = datetime.strptime(published, "%Y-%m-%d").date().toordinal() >= cutoff
+        except ValueError:
+            recent = False
+        if (recent and cve.get("vulnStatus") in _UNANALYZED_STATUSES and cve.get("id") not in seen
+                and _description_is_about(_english_description(cve), term)):
+            found.append(cve)
+    return found
+
+
+# How CVE descriptions usually open before naming the affected product.
+_DESCRIPTION_LEADS = re.compile(r"^(?:an? (?:issue|vulnerability|flaw|security issue) (?:has been |was )?"
+                                r"(?:discovered|found|identified|reported)? ?in |in |the )", re.IGNORECASE)
+
+
+def _description_is_about(description: str, term: str) -> bool:
+    """Is the CVE about ``term`` itself? Its description opens with the product name ("GitLab has...",
+    "In PHP versions..."), not with another product that only mentions it ("PhpSpreadsheet is a pure PHP
+    library", "NextAuth.js provides authentication for Next.js")."""
+    text = _DESCRIPTION_LEADS.sub("", description.strip(), count=1)
+    return mentions_whole_words(text[:len(term) + 1], term) and text.lower().startswith(term.split()[0].lower())
+
+
+_DESCRIPTION_RANGE = re.compile(r"(?:from |versions? )?(\d+(?:\.\d+)+)\s+(?:before|until|up to|prior to)\s+"
+                                r"(\d+(?:\.\d+)+)", re.IGNORECASE)
+
+
+def _description_covers(description: str, version: str) -> bool:
+    """True when a "from X before Y" style range in the description includes ``version`` (a hint, not a verdict)."""
+    return any(compare_versions(version, low) >= 0 and compare_versions(version, high) < 0
+               for low, high in _DESCRIPTION_RANGE.findall(description))
+
+
+def _upgrade_with_review_note(upgrade: Optional[Dict[str, Any]], unanalyzed: List[Dict[str, Any]]):
+    """The minimum safe version only covers CVEs NVD has analysed; say so when others need review."""
+    if upgrade and unanalyzed:
+        upgrade = {**upgrade, "review_note": (f"Doesn't account for {len(unanalyzed)} CVE(s) NVD hasn't analysed "
+                                              "yet (see needs_review_cves); they may need a later version.")}
+    return upgrade
 
 
 def _resolve_products(name: str, keys: Optional[ApiKeys]) -> List[Tuple[str, str]]:

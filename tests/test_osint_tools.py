@@ -731,3 +731,50 @@ def test_nvd_429_is_retried_then_explained(monkeypatch):
     with pytest.raises(t.SourceError, match="rate limit"):
         t._nvd_get(t.NVD_CVE_URL, {"cveId": "CVE-2099-0429"}, None)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("description, term, expected", [
+    ("In PHP versions 8.2.* before 8.2.35, a crafted upload...", "php", True),
+    ("Next.js is a React framework. From 13.0.0 until 15.5.28...", "next.js", True),
+    ("An issue has been discovered in GitLab CE/EE affecting all versions...", "gitlab", True),
+    # Other products that only mention it are not about it.
+    ("PhpSpreadsheet is a pure PHP library for reading spreadsheets.", "php", False),
+    ("NextAuth.js provides authentication for Next.js.", "next.js", False),
+    ("Bytebase before 1.0.1 trusts GitLab OAuth claims.", "gitlab", False),
+])
+def test_recent_cves_must_be_about_the_product(description, term, expected):
+    assert t._description_is_about(description, term) is expected
+
+
+def test_description_ranges_hint_whether_a_version_is_covered():
+    text = "affecting all versions from 12.0 before 19.3.6, 19.4 before 19.4.3, and 19.5 before 19.5.1"
+    assert t._description_covers(text, "19.3.2") and t._description_covers(text, "19.4.0")
+    assert not t._description_covers(text, "19.3.6")
+
+
+def test_kev_product_must_be_named_in_the_product_field():
+    phpmailer = {"vendorProject": "PHP", "product": "PHPMailer", "vulnerabilityName": "PHPMailer Command Injection"}
+    php = {"vendorProject": "PHP", "product": "PHP", "vulnerabilityName": "PHP-CGI OS Command Injection"}
+    netscaler = {"vendorProject": "Citrix", "product": "NetScaler ADC and NetScaler Gateway",
+                 "vulnerabilityName": "Citrix NetScaler Out-of-Bounds Read"}
+    assert not t.kev_matches_software(phpmailer, "php") and t.kev_matches_software(php, "php")
+    assert t.kev_matches_software(netscaler, "Citrix NetScaler")
+
+
+def test_kev_product_matches_say_when_shortened(monkeypatch):
+    catalog = {"vulnerabilities": [{"cveID": f"CVE-2026-{i:04d}", "vendorProject": "GitLab", "product": "GitLab",
+                                    "dateAdded": f"2026-01-{i + 1:02d}"} for i in range(5)]}
+    monkeypatch.setattr(t, "_load_kev_catalog", lambda: catalog)
+    monkeypatch.setattr(t, "epss_lookup_many", lambda ids: {})
+    match = t.kev_matches_for_software(["gitlab"], limit=3)["gitlab"]
+    assert match["count"] == 5 and match["entries_shown"].startswith("showing 3 of 5")
+
+
+def test_ruled_out_ranges_show_the_nearest_first():
+    # Real confusion: PHP 8.5.12's ruled-out example listed only the 4.x-8.4 ranges, not "from 8.5.0 before 8.5.12".
+    cve = _cve(*[{"vulnerable": True, "criteria": "cpe:2.3:a:php:php:*:*:*:*:*:*:*:*", **r} for r in (
+        {"versionEndExcluding": "8.2.35"}, {"versionStartIncluding": "8.3.0", "versionEndExcluding": "8.3.36"},
+        {"versionStartIncluding": "8.4.0", "versionEndExcluding": "8.4.27"},
+        {"versionStartIncluding": "8.5.0", "versionEndExcluding": "8.5.12"})])
+    verdict = t.assess_cve_for_version(cve, "php", "php", "8.5.12")
+    assert verdict["status"] == "NOT_AFFECTED" and verdict["affected_ranges"][0] == "php:php from 8.5.0 before 8.5.12"
