@@ -1228,7 +1228,16 @@ def osint_distro_patch_check(package: str, package_version: str, distro: str, re
                 known = ", ".join(r for r, _ in DISTRO_RELEASES[distro_key])
                 return {"tool": "distro_patch_check", "error": f"Unknown {name} release {release!r} (known: {known})"}
             ecosystem = next((e for e in ecosystems
-                              if _strip_epoch(version) in _osv_package(e, package)["versions"]), ecosystems[0])
+                              if _strip_epoch(version) in _osv_package(e, package)["versions"]), None)
+            if ecosystem is None:
+                found, _, candidates = _find_release(distro_key, package, version)
+                where = (f"It matches {name} {found}." if found else
+                         f"It matches {name} {', '.join(candidates)}." if candidates else
+                         f"It isn't in {name}'s records for any supported release.")
+                return {"tool": "distro_patch_check", "success": False, "distro": name, "package": package,
+                        "package_version": version,
+                        "info": f"{package} {version} isn't a package version in {name} {release}. {where} "
+                                "Check the release, or omit it to detect it."}
         else:
             release, ecosystem, candidates = _find_release(distro_key, package, version)
             if not release:
@@ -1770,10 +1779,13 @@ def osint_threat_lists_check(ip_address: str, keys: Optional[ApiKeys] = None) ->
         }
     except SourceError as exc:
         result["spamhaus_drop"] = {"error": str(exc)}
-    try:
-        result["greynoise"] = _greynoise(str(ip_obj), keys)
-    except SourceError as exc:
-        result["greynoise"] = {"error": redact(str(exc), keys)}
+    if ip_obj.version == 6:
+        result["greynoise"] = {"error": "not checked: GreyNoise's community API covers IPv4 addresses only"}
+    else:
+        try:
+            result["greynoise"] = _greynoise(str(ip_obj), keys)
+        except SourceError as exc:
+            result["greynoise"] = {"error": redact(str(exc), keys)}
     if all("error" in result[k] for k in ("spamhaus_drop", "greynoise")):
         return {"tool": "threat_lists", "error": f"Spamhaus DROP: {result['spamhaus_drop']['error']}; "
                                                  f"GreyNoise: {result['greynoise']['error']}"}
@@ -1826,6 +1838,7 @@ def osint_subdomains(domain: str, limit: int = 100) -> Dict[str, Any]:
         "source": source,
         "count": len(found),
         "subdomains": found[:limit],
+        **({"subdomains_shown": f"showing {limit} of {len(found)}"} if len(found) > limit else {}),
         "wildcard_certificates": sorted(wildcards)[:20],
         "note": ("From public certificate transparency logs: names that have had TLS certificates. They may no "
                  "longer exist or resolve. Shodan lookups are quota-limited, so check only hosts that matter."),

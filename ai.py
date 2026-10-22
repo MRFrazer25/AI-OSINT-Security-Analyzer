@@ -680,6 +680,8 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
             gn = r.get("greynoise") or {}
             if gn.get("meaning"):
                 add("GreyNoise", gn["meaning"] + (f" ({gn['name']})" if gn.get("name") else ""))
+            elif gn.get("error"):
+                add("GreyNoise", gn["error"] if gn["error"].startswith("not checked") else f"not checked: {gn['error']}")
         elif tool == "subdomains":
             add(f"Subdomains of {r['domain']} (certificate logs)",
                 f"{r.get('count', 0)} found via {r.get('source')}"

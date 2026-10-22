@@ -778,3 +778,19 @@ def test_ruled_out_ranges_show_the_nearest_first():
         {"versionStartIncluding": "8.5.0", "versionEndExcluding": "8.5.12"})])
     verdict = t.assess_cve_for_version(cve, "php", "php", "8.5.12")
     assert verdict["status"] == "NOT_AFFECTED" and verdict["affected_ranges"][0] == "php:php from 8.5.0 before 8.5.12"
+
+
+def test_greynoise_is_skipped_for_ipv6(monkeypatch):
+    monkeypatch.setattr(t, "_drop_cache", t._TTLCache(60))
+    calls = []
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: calls.append(url) or _TextResp(200, DROP_V4))
+    r = t.osint_threat_lists_check("2606:4700:4700::1111")
+    assert "IPv4 addresses only" in r["greynoise"]["error"]
+    assert not any("greynoise" in u for u in calls)
+
+
+def test_distro_release_given_must_contain_the_version(monkeypatch):
+    _fake_osv(monkeypatch, JAMMY)
+    r = t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu", release="18.04")
+    assert r["success"] is False and "isn't a package version in Ubuntu 18.04" in r["info"]
+    assert "It matches Ubuntu 22.04" in r["info"]
