@@ -232,9 +232,10 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
         key_message.info("Session keys cleared.")
 
     keys_now = effective_keys()
-    status_cols = st.columns(len(KEY_FIELDS))
-    for col, name in zip(status_cols, KEY_FIELDS, strict=True):
-        col.markdown(f"**{key_link(name)}**  \n{'Configured' if getattr(keys_now, name) else 'Missing'}")
+    names = list(KEY_FIELDS)
+    for start in range(0, len(names), 3):  # rows of three, so service names don't wrap mid-word
+        for col, name in zip(st.columns(3), names[start:start + 3]):
+            col.markdown(f"**{key_link(name)}**  \n{'Configured' if getattr(keys_now, name) else 'Missing'}")
 
 # --- Target input -------------------------------------------------------------
 st.subheader("Target Analysis")
