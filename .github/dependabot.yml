@@ -1,0 +1,23 @@
+# Weekly dependency updates, grouped into one pull request per ecosystem.
+# cooldown: only versions released at least 7 days ago are proposed, so a compromised release
+# (usually found and pulled within days) never reaches this repo. Security fixes are not delayed.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      python-packages:
+        patterns: ["*"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]

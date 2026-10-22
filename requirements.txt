@@ -1,5 +1,6 @@
-streamlit
-cohere
-shodan
-requests
-python-dotenv
+# Exact versions. Dependabot proposes updates weekly, once a release is 7 days old (.github/dependabot.yml).
+streamlit==1.66.1
+cohere==7.2.0
+shodan==1.31.0
+requests==2.34.2
+python-dotenv==1.2.4

@@ -20,11 +20,11 @@ classifiers = [
 ]
 keywords = ["osint", "security", "threat-intelligence", "vulnerability", "cve", "ai-agent", "cohere", "streamlit"]
 dependencies = [
-    "streamlit",
-    "cohere",
-    "shodan",
-    "requests",
-    "python-dotenv",
+    "streamlit==1.66.1",
+    "cohere==7.2.0",
+    "shodan==1.31.0",
+    "requests==2.34.2",
+    "python-dotenv==1.2.4",
 ]
 
 [project.optional-dependencies]
