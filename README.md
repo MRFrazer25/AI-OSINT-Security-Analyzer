@@ -11,7 +11,9 @@ An AI agent that investigates IP addresses, domains, CVEs and software versions 
 * **Agentic investigation:** the model plans and chains tool calls based on what it finds, within a per-run budget.
 * **Version-accurate vulnerability matching:** CVEs are checked against NVD's structured CPE affected-version ranges, so `nginx 1.20.1` is not reported as vulnerable to a bug fixed in 1.20.1. Each CVE is labelled *affected*, *needs review* (NVD hasn't analysed it yet) or *ruled out*.
 * **Exploit-aware prioritisation:** findings are enriched with [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) (exploited in the wild), CVSS (v4.0 → v2 fallback) and [FIRST EPSS](https://www.first.org/epss/) exploit probability.
-* **Exposure and reputation:** Shodan services and banners, VirusTotal engine detections (with the names of flagging vendors) and AbuseIPDB abuse reports.
+* **Distro-aware patch checks:** for Ubuntu and Debian packages named in banners (e.g. `OpenSSH_8.9p1 Ubuntu-3ubuntu0.6`), the distro's own security data shows which CVEs are already fixed by a backport, so patched servers aren't reported as vulnerable.
+* **Exposure and reputation:** Shodan services and banners, VirusTotal engine detections (with the names of flagging vendors), AbuseIPDB abuse reports, Spamhaus DROP, GreyNoise, the network's registered owner, and subdomains from certificate logs.
+* **Works without most keys:** only Cohere is required. Without a Shodan key, Shodan's free InternetDB is used, and the key facts list every source that wasn't checked so a skipped lookup is never read as a clean result.
 * **Analysis depth levels:** Quick Scan, Standard, Comprehensive and Expert. Each level sets how many tool calls the agent may make, protecting free-tier quotas.
 * **Key facts box:** open ports, reputation scores, version-check results, the minimum safe version to upgrade to, and confirmed vs related CISA KEV entries (with EPSS) are computed directly from the data sources and shown above the AI's write-up. They're identical on every run and use no AI credits.
 * **Model choice:** pick a Cohere model per analysis, with automatic fallback if your key can't use it.
@@ -38,18 +40,28 @@ Private, loopback, link-local, CGNAT and other non-public addresses are rejected
 | [AbuseIPDB](https://www.abuseipdb.com/) | Abuse reports for IPs | Optional | [abuseipdb.com/register](https://www.abuseipdb.com/register) |
 | [NVD](https://nvd.nist.gov/) | CVE details and affected versions | Optional (raises rate limit) | [nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key) |
 | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), [FIRST EPSS](https://www.first.org/epss/) | Exploitation status / probability | Not needed | n/a |
+| [GreyNoise](https://www.greynoise.io/) | Internet scanners and known business services | Optional (10 lookups a day without one; a free key needs a business email) | [viz.greynoise.io/signup](https://viz.greynoise.io/signup) |
+| [OSV.dev](https://osv.dev/) | Ubuntu and Debian fixes for installed packages | Not needed | n/a |
+| Internet registries (RDAP) | Who an IP's network is registered to | Not needed | n/a |
+| [Spamhaus DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/) | Hijacked or criminal networks | Not needed (downloaded at most once a day, as Spamhaus asks) | n/a |
+| [crt.sh](https://crt.sh/), [Cert Spotter](https://sslmate.com/ct_search_api/) | Subdomains from certificate transparency logs | Not needed | n/a |
+| [Shodan InternetDB](https://internetdb.shodan.io/), [Shodan CVEDB](https://cvedb.shodan.io/) | Ports and software without a Shodan key; CVE details when NVD is down | Not needed (free for non-commercial use) | n/a |
 
 All of these offer free tiers. Check each provider for its current limits. Free tiers that matter here:
 
 * Cohere trial keys are for evaluation, limited to 1,000 calls a month, and Cohere may use trial inputs and outputs, de-identified, for research. Use a production key for real or sensitive work.
 * VirusTotal's free public API allows 4 lookups a minute and 500 a day, and [must not be used in commercial products or services](https://docs.virustotal.com/reference/public-vs-premium-api).
 * AbuseIPDB's [free plans](https://www.abuseipdb.com/legal) are for non-commercial personal projects, and its data must not be republished.
+* Shodan's InternetDB and CVEDB are free for non-commercial use only.
+* Spamhaus DROP is free, but [Spamhaus must be credited](https://www.spamhaus.org/drop/terms/) when it's used in a product.
 
 If you deploy your own copy, keep `SHARE_SERVER_KEYS` off (the default) so visitors can't use your keys.
 
 This product uses data from the NVD API but is not endorsed or certified by the NVD.
 
-This is an independent project, not affiliated with, endorsed by or sponsored by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA or FIRST. Their names are used only to say which services it works with.
+Spamhaus DROP data is (c) The Spamhaus Project.
+
+This is an independent project, not affiliated with, endorsed by or sponsored by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA, FIRST, Spamhaus, GreyNoise or the internet registries. Their names are used only to say which services it works with.
 
 ## Running locally
 
@@ -106,9 +118,9 @@ These apply only when an analysis uses a server-provided Cohere, Shodan, VirusTo
 ## How it works
 
 1. **Classify** the input as an IP, domain, CVE or software, rejecting anything invalid or non-public.
-2. **Baseline lookups (in code):** for IPs and domains, DNS, Shodan, VirusTotal and AbuseIPDB always run before the AI starts, so core coverage never depends on the model. Shodan results are automatically checked against CISA KEV, including products named only in service banners.
-3. **Investigate:** the agent chooses further tools (NVD version check, NVD lookup, CISA KEV, keyword search). Duplicate calls are served from cache, and quota-limited services are capped per run. Keyword searches keep only CVEs that mention the term as a whole word.
-4. **Verify versions:** for each product and version, CVEs come from NVD's CPE match API and are then re-checked locally against each affected range. The minimum safe version is computed from the range ends.
+2. **Baseline lookups (in code):** for IPs and domains, DNS, Shodan, VirusTotal, AbuseIPDB, the registry owner and the Spamhaus/GreyNoise threat lists always run before the AI starts, so core coverage never depends on the model. The keyless owner and threat-list lookups don't count against the tool budget. Shodan results are automatically checked against CISA KEV, including products named only in service banners.
+3. **Investigate:** the agent chooses further tools (NVD version check, distro patch check, NVD lookup, CISA KEV, keyword search, subdomains). Duplicate calls are served from cache, and quota-limited services are capped per run. Keyword searches keep only CVEs that mention the term as a whole word.
+4. **Verify versions:** for each product and version, CVEs come from NVD's CPE match API and are then re-checked locally against each affected range. The minimum safe version is computed from the range ends. When a banner names an Ubuntu or Debian package, the distro's data overrides NVD's verdict for CVEs it has already fixed.
 5. **Report:** code builds the Key facts. The model writes an executive summary, a key-findings table, details (Confirmed / Related / Needs Review / Ruled Out), prioritised recommendations and limitations, citing a source for every claim.
 
 ## Security and privacy
@@ -120,13 +132,13 @@ These apply only when an analysis uses a server-provided Cohere, Shodan, VirusTo
 * **Key redaction:** error messages are scrubbed of API key values.
 * **No telemetry:** Streamlit usage stats are disabled, stack traces are hidden from visitors, and analysed targets are not written to server logs.
 
-**What leaves your machine:** the target and the gathered evidence are sent to Cohere to produce the report. The target is also looked up at whichever sources apply (Shodan, VirusTotal, AbuseIPDB, NVD, CISA, FIRST). Each lookup is subject to that provider's privacy policy, and each provider also sees the requesting IP address: Shodan, NIST, CISA and FIRST say they log details such as the IP and time of each request. With a Cohere trial key, Cohere may use the target and evidence, de-identified, for research. Don't submit targets you need to keep confidential.
+**What leaves your machine:** the target and the gathered evidence are sent to Cohere to produce the report. The target is also looked up at whichever sources apply: Shodan, VirusTotal, AbuseIPDB, NVD, FIRST, GreyNoise, the internet registries, OSV.dev, and crt.sh or Cert Spotter. CISA's KEV catalog and Spamhaus DROP are downloaded whole, so no target is sent to them. Each lookup is subject to that provider's privacy policy, and each provider also sees the requesting IP address: Shodan, NIST, CISA and FIRST say they log details such as the IP and time of each request. With a Cohere trial key, Cohere may use the target and evidence, de-identified, for research. Don't submit targets you need to keep confidential.
 
 Exported reports can contain sensitive findings. Handle them accordingly.
 
 ## Accuracy notes
 
-* Banner versions can mislead. Linux distributions often backport security fixes without changing the version string, so verify findings against your distribution's security tracker.
+* Banner versions can mislead. Linux distributions often backport security fixes without changing the version string. The distro patch check handles Ubuntu and Debian packages whose banner includes the package version (mainly OpenSSH); for others, such as Apache or nginx on Ubuntu and anything on Red Hat, verify findings against your distribution's security tracker.
 * "No known vulnerabilities" means no matching NVD records, not that a system is secure.
 * A product-level CISA KEV match shows that the product has been exploited before, not that the target's version is affected.
 * Testing so far has focused on common software and devices, so results for less common products may be less reliable. If a result looks wrong, please [open an issue](https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer/issues) with the target you used.

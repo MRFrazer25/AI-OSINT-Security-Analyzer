@@ -38,6 +38,15 @@ NVD_CVE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_CPE_URL = "https://services.nvd.nist.gov/rest/json/cpes/2.0"
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_URL = "https://api.first.org/data/v1/epss"
+OSV_QUERY_URL = "https://api.osv.dev/v1/query"
+INTERNETDB_URL = "https://internetdb.shodan.io"
+CVEDB_URL = "https://cvedb.shodan.io/cve"
+GREYNOISE_COMMUNITY_URL = "https://api.greynoise.io/v3/community"
+SPAMHAUS_DROP_URLS = {4: "https://www.spamhaus.org/drop/drop_v4.json", 6: "https://www.spamhaus.org/drop/drop_v6.json"}
+CRTSH_URL = "https://crt.sh/"
+CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
+# IANA's official lists of which regional internet registry serves each address block over RDAP.
+RDAP_BOOTSTRAP_URLS = {4: "https://data.iana.org/rdap/ipv4.json", 6: "https://data.iana.org/rdap/ipv6.json"}
 VT_URL = "https://www.virustotal.com/api/v3"
 ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
 
@@ -53,6 +62,7 @@ KEY_SIGNUP_URLS = {
     "virustotal": "https://www.virustotal.com/gui/join-us",
     "abuseipdb": "https://www.abuseipdb.com/register",
     "nvd": "https://nvd.nist.gov/developers/request-an-api-key",
+    "greynoise": "https://viz.greynoise.io/signup",
 }
 
 @dataclass(frozen=True)
@@ -64,6 +74,7 @@ class ApiKeys:
     virustotal: str = ""
     abuseipdb: str = ""
     nvd: str = ""
+    greynoise: str = ""
 
     @classmethod
     def from_env(cls) -> "ApiKeys":
@@ -73,6 +84,7 @@ class ApiKeys:
             virustotal=os.getenv("VIRUSTOTAL_API_KEY", "") or os.getenv("VT_API_KEY", ""),
             abuseipdb=os.getenv("ABUSEIPDB_API_KEY", ""),
             nvd=os.getenv("NVD_API_KEY", ""),
+            greynoise=os.getenv("GREYNOISE_API_KEY", ""),
         )
 
     def with_overrides(self, **overrides: str) -> "ApiKeys":
@@ -81,7 +93,7 @@ class ApiKeys:
         return ApiKeys(**values)
 
     def secrets(self) -> List[str]:
-        return [v for v in (self.cohere, self.shodan, self.virustotal, self.abuseipdb, self.nvd) if v]
+        return [v for v in (self.cohere, self.shodan, self.virustotal, self.abuseipdb, self.nvd, self.greynoise) if v]
 
 
 def redact(text: str, keys: Optional[ApiKeys]) -> str:
@@ -158,6 +170,11 @@ class _RateLimiter:
 _nvd_cache = _TTLCache(ttl_seconds=3600, maxsize=512, max_bytes=32 * 1024 * 1024)
 _epss_cache = _TTLCache(ttl_seconds=12 * 3600, maxsize=5000)
 _kev_cache = _TTLCache(ttl_seconds=6 * 3600, maxsize=1)
+_rdap_bootstrap_cache = _TTLCache(ttl_seconds=24 * 3600, maxsize=2)
+# Spamhaus asks for automated downloads of DROP no more than once a day.
+_drop_cache = _TTLCache(ttl_seconds=24 * 3600, maxsize=2)
+# One distro package's OSV records are about 1 MB raw; they're summarised first, then bounded here.
+_osv_cache = _TTLCache(ttl_seconds=6 * 3600, maxsize=64, max_bytes=16 * 1024 * 1024)
 # NVD allows 5 requests per 30 s without a key (per IP) and 50 with one.
 _nvd_keyless_limiter = _RateLimiter(max_calls=5, period=30.0)
 _nvd_keyed_limiter = _RateLimiter(max_calls=50, period=30.0)
@@ -220,13 +237,17 @@ class SourceError(Exception):
 
 
 def _http_get(url: str, *, params: Optional[dict] = None, headers: Optional[dict] = None,
-              timeout: float = HTTP_TIMEOUT, retries: int = 2) -> requests.Response:
+              timeout: float = HTTP_TIMEOUT, retries: int = 2, json_body: Optional[dict] = None) -> requests.Response:
+    """GET (or POST, when ``json_body`` is given) with retries on network errors and 429/5xx."""
     merged_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     merged_headers.update(headers or {})
     last_error = ""
     for attempt in range(retries + 1):
         try:
-            resp = requests.get(url, params=params, headers=merged_headers, timeout=timeout)
+            if json_body is not None:
+                resp = requests.post(url, json=json_body, headers=merged_headers, timeout=timeout)
+            else:
+                resp = requests.get(url, params=params, headers=merged_headers, timeout=timeout)
         except requests.RequestException as exc:
             last_error = type(exc).__name__
             time.sleep(1.5 * (attempt + 1))
@@ -408,7 +429,12 @@ def resolve_cpe_alias(name: str) -> Optional[Tuple[str, str]]:
     if normalized in SOFTWARE_CPE_ALIASES:
         return SOFTWARE_CPE_ALIASES[normalized]
     stripped = _DAEMON_SUFFIXES.sub("", normalized)
-    return SOFTWARE_CPE_ALIASES.get(stripped)
+    if stripped in SOFTWARE_CPE_ALIASES:
+        return SOFTWARE_CPE_ALIASES[stripped]
+    # "vendor product" as CPEs name it, e.g. "openbsd openssh" -> openbsd:openssh
+    vendor, _, product = stripped.partition(" ")
+    alias = SOFTWARE_CPE_ALIASES.get(product)
+    return alias if alias and alias[0] in (vendor, "*") else None
 
 
 def extract_version(text: Optional[str]) -> Optional[str]:
@@ -945,6 +971,273 @@ def resolve_domain(domain: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Distro packages (backported fixes), from the distros' own data via OSV.dev
+# ---------------------------------------------------------------------------
+
+# Releases to try, newest first. Each lists its OSV ecosystems; Ubuntu moves releases to "Pro" when standard
+# support ends, and 20.04 currently has records under both.
+DISTRO_RELEASES: Dict[str, List[Tuple[str, List[str]]]] = {
+    "ubuntu": [("26.04", ["Ubuntu:26.04:LTS"]), ("25.10", ["Ubuntu:25.10"]), ("24.04", ["Ubuntu:24.04:LTS"]),
+               ("22.04", ["Ubuntu:22.04:LTS"]), ("20.04", ["Ubuntu:20.04:LTS", "Ubuntu:Pro:20.04:LTS"]),
+               ("18.04", ["Ubuntu:Pro:18.04:LTS"]), ("16.04", ["Ubuntu:Pro:16.04:LTS"]),
+               ("14.04", ["Ubuntu:Pro:14.04:LTS"])],
+    "debian": [("14", ["Debian:14"]), ("13", ["Debian:13"]), ("12", ["Debian:12"]), ("11", ["Debian:11"]),
+               ("10", ["Debian:10"])],
+}
+_DISTRO_NAMES = {"ubuntu": "Ubuntu", "debian": "Debian"}
+_PACKAGE_RE = re.compile(r"[a-z0-9][a-z0-9.+-]{0,60}")
+_DPKG_VERSION_RE = re.compile(r"(?:\d{1,5}:)?[0-9][0-9A-Za-z.+~-]{0,80}")
+_DEBIAN_SECURITY_RE = re.compile(r"\+deb(\d{1,2})u\d")
+# Banners that carry the distro package revision, e.g. "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6".
+# Character classes don't overlap, so matching stays linear on hostile banners.
+_DISTRO_BANNERS = [("openssh", re.compile(r"OpenSSH_([0-9][0-9A-Za-z.]{0,30}) (Ubuntu|Debian)-([0-9][0-9A-Za-z.+~]{0,40})"))]
+
+
+def distro_package_from_banner(banner: Optional[str]) -> Optional[Dict[str, str]]:
+    """The distro package a service banner names, when the banner includes the package revision."""
+    for package, pattern in _DISTRO_BANNERS:
+        match = pattern.search(banner or "")
+        if match:
+            upstream, distro, revision = match.groups()
+            return {"distro": distro, "package": package, "package_version": f"{upstream}-{revision}"}
+    return None
+
+
+def _dpkg_order(c: str) -> int:
+    if c.isdigit():
+        return 0
+    if c.isalpha():
+        return ord(c)
+    return -1 if c == "~" else ord(c) + 256
+
+
+def _dpkg_part_cmp(a: str, b: str) -> int:
+    """dpkg's ordering for an upstream version or revision ("~" sorts before everything, even the end)."""
+    i = j = 0
+    while i < len(a) or j < len(b):
+        while (i < len(a) and not a[i].isdigit()) or (j < len(b) and not b[j].isdigit()):
+            ac = _dpkg_order(a[i]) if i < len(a) else 0
+            bc = _dpkg_order(b[j]) if j < len(b) else 0
+            if ac != bc:
+                return -1 if ac < bc else 1
+            i, j = i + 1, j + 1
+        ni = i
+        while ni < len(a) and a[ni].isdigit():
+            ni += 1
+        nj = j
+        while nj < len(b) and b[nj].isdigit():
+            nj += 1
+        na, nb = int(a[i:ni] or 0), int(b[j:nj] or 0)
+        if na != nb:
+            return -1 if na < nb else 1
+        i, j = ni, nj
+    return 0
+
+
+def _dpkg_split(version: str) -> Tuple[int, str, str]:
+    epoch, sep, rest = version.partition(":")
+    if not sep:
+        epoch, rest = "0", version
+    upstream, sep, revision = rest.rpartition("-")
+    if not sep:
+        upstream, revision = rest, ""
+    return (int(epoch) if epoch.isdigit() else 0), upstream, revision
+
+
+def compare_dpkg_versions(a: str, b: str) -> int:
+    """Compare two Debian/Ubuntu package versions (epoch:upstream-revision) the way dpkg does. Returns -1, 0 or 1."""
+    (ea, ua, ra), (eb, ub, rb) = _dpkg_split(a), _dpkg_split(b)
+    if ea != eb:
+        return -1 if ea < eb else 1
+    return _dpkg_part_cmp(ua, ub) or _dpkg_part_cmp(ra, rb)
+
+
+def _strip_epoch(version: str) -> str:
+    return version.split(":", 1)[1] if ":" in version else version
+
+
+def _osv_package(ecosystem: str, package: str) -> Dict[str, Any]:
+    """The distro's records for one source package in one release: known versions and each CVE's ranges."""
+    cache_key = (ecosystem, package)
+    cached = _osv_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    versions: set = set()
+    records: List[Dict[str, Any]] = []
+    body: Dict[str, Any] = {"package": {"name": package, "ecosystem": ecosystem}}
+    for _ in range(5):  # OSV pages large answers
+        resp = _http_get(OSV_QUERY_URL, json_body=body, timeout=30)
+        if resp.status_code != 200:
+            raise SourceError(f"OSV.dev returned HTTP {resp.status_code}")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise SourceError("OSV.dev returned invalid JSON") from exc
+        for vuln in data.get("vulns", []) or []:
+            cves = [c for c in (vuln.get("upstream") or vuln.get("aliases") or []) if is_valid_cve(c)]
+            for affected in vuln.get("affected", []) or []:
+                pkg = affected.get("package") or {}
+                if pkg.get("name") != package or pkg.get("ecosystem") != ecosystem:
+                    continue  # one record can cover several packages
+                versions.update(_strip_epoch(v) for v in affected.get("versions", []) or [])
+                ranges = [r.get("events", []) for r in affected.get("ranges", []) or [] if r.get("type") == "ECOSYSTEM"]
+                specific = affected.get("ecosystem_specific") or {}
+                for cve in cves:
+                    records.append({"cve_id": cve.upper(), "ranges": ranges,
+                                    "versions": [_strip_epoch(v) for v in affected.get("versions", []) or []],
+                                    "availability": specific.get("availability")})
+        token = data.get("next_page_token")
+        if not token:
+            break
+        body = {**body, "page_token": token}
+    summary = {"versions": sorted(versions), "records": records}
+    _osv_cache.set(cache_key, summary, size=len(json.dumps(summary)))
+    return summary
+
+
+def _with_epoch(version: str, reference: str) -> str:
+    """Banners drop the epoch ("1:" in "1:8.9p1-3ubuntu0.6"); borrow it from the version being compared."""
+    if ":" in version or ":" not in reference:
+        return version
+    return reference.split(":", 1)[0] + ":" + version
+
+
+def _package_status(version: str, record: Dict[str, Any]) -> Dict[str, Any]:
+    """Whether ``version`` of the package is affected by one distro record, and the fixing version if any."""
+    if not record["ranges"]:
+        return {"affected": _strip_epoch(version) in record["versions"], "fixed_in": None}
+    affected, fixed_in = False, None
+    for events in record["ranges"]:
+        inside, fix = False, None
+        for event in events:
+            if "introduced" in event:
+                intro = event["introduced"]
+                if intro == "0" or compare_dpkg_versions(_with_epoch(version, intro), intro) >= 0:
+                    inside = True
+            elif "fixed" in event:
+                fix = event["fixed"]
+                if inside and compare_dpkg_versions(_with_epoch(version, fix), fix) >= 0:
+                    inside = False
+                elif inside:
+                    break
+            elif "last_affected" in event:
+                if inside and compare_dpkg_versions(_with_epoch(version, event["last_affected"]),
+                                                    event["last_affected"]) > 0:
+                    inside = False
+                elif inside:
+                    break
+        if inside:
+            return {"affected": True, "fixed_in": fix if fix and compare_dpkg_versions(
+                _with_epoch(version, fix), fix) < 0 else None}
+        fixed_in = fixed_in or fix
+    return {"affected": affected, "fixed_in": fixed_in}
+
+
+def _find_release(distro: str, package: str, version: str) -> Tuple[Optional[str], Optional[str], List[str]]:
+    """(release, ecosystem, ambiguous candidates) for a package version, from the distro's own version lists."""
+    match = _DEBIAN_SECURITY_RE.search(version) if distro == "debian" else None
+    if match:  # Debian security updates name their release, e.g. "+deb12u3"
+        for release, ecosystems in DISTRO_RELEASES["debian"]:
+            if release == match.group(1):
+                return release, ecosystems[0], []
+    found: List[Tuple[str, str]] = []
+    for release, ecosystems in DISTRO_RELEASES[distro]:
+        for ecosystem in ecosystems:
+            if _strip_epoch(version) in _osv_package(ecosystem, package)["versions"]:
+                found.append((release, ecosystem))
+                break
+    if len(found) == 1:
+        return found[0][0], found[0][1], []
+    return None, None, [release for release, _ in found]
+
+
+def osint_distro_patch_check(package: str, package_version: str, distro: str, release: Optional[str] = None,
+                             cve_ids: Optional[Sequence[str]] = None, result_limit: int = 15) -> Dict[str, Any]:
+    """Check a Debian/Ubuntu package version against the distro's own fix data, so backported fixes count."""
+    distro_key = (distro or "").strip().lower()
+    if distro_key not in DISTRO_RELEASES:
+        return {"tool": "distro_patch_check", "error": "distro must be 'Ubuntu' or 'Debian'"}
+    package = (package or "").strip().lower()
+    version = (package_version or "").strip()
+    if not _PACKAGE_RE.fullmatch(package):
+        return {"tool": "distro_patch_check", "error": f"Invalid package name: {package[:60]!r}"}
+    if not _DPKG_VERSION_RE.fullmatch(version):
+        return {"tool": "distro_patch_check", "error": f"Invalid package version: {version[:80]!r}"}
+    ids = list(dict.fromkeys(c.strip().upper() for c in (cve_ids or []) if c and is_valid_cve(c)))[:50]
+    name = _DISTRO_NAMES[distro_key]
+    try:
+        if release:
+            release = str(release).strip().split(" ")[0]
+            ecosystems = dict(DISTRO_RELEASES[distro_key]).get(release)
+            if not ecosystems:
+                known = ", ".join(r for r, _ in DISTRO_RELEASES[distro_key])
+                return {"tool": "distro_patch_check", "error": f"Unknown {name} release {release!r} (known: {known})"}
+            ecosystem = next((e for e in ecosystems
+                              if _strip_epoch(version) in _osv_package(e, package)["versions"]), ecosystems[0])
+        else:
+            release, ecosystem, candidates = _find_release(distro_key, package, version)
+            if not release:
+                why = (f"matches several {name} releases ({', '.join(candidates)})" if candidates
+                       else f"isn't in {name}'s records for any supported release")
+                return {"tool": "distro_patch_check", "success": False, "distro": name, "package": package,
+                        "package_version": version,
+                        "info": f"Can't tell which {name} release this is: {package} {version} {why}. "
+                                "Pass release if you know it."}
+        data = _osv_package(ecosystem, package)
+    except SourceError as exc:
+        return {"tool": "distro_patch_check", "error": str(exc)}
+
+    open_cves: Dict[str, Dict[str, Any]] = {}
+    fixed: Dict[str, Optional[str]] = {}
+    for record in data["records"]:
+        status = _package_status(version, record)
+        cve = record["cve_id"]
+        if status["affected"]:
+            entry = {"cve_id": cve, "package_fix": (f"fixed in package {status['fixed_in']}" if status["fixed_in"]
+                                                   else f"{name} has not released a fix yet")}
+            if status["fixed_in"] and record.get("availability"):
+                entry["availability"] = record["availability"]
+            open_cves[cve] = entry
+            fixed.pop(cve, None)
+        elif cve not in open_cves:
+            fixed[cve] = status["fixed_in"]
+
+    result: Dict[str, Any] = {
+        "tool": "distro_patch_check",
+        "success": True,
+        "distro": name,
+        "release": release,
+        "osv_ecosystem": ecosystem,
+        "package": package,
+        "package_version": version,
+    }
+    if ids:
+        checked = {}
+        for cve in ids:
+            if cve in open_cves:
+                checked[cve] = {"status": "STILL_AFFECTS_PACKAGE", **open_cves[cve]}
+            elif cve in fixed:
+                checked[cve] = {"status": "FIXED_IN_PACKAGE",
+                                "detail": f"fixed by {name} in {fixed[cve]}" if fixed[cve] else f"{name} marks it not affecting this version"}
+            else:
+                checked[cve] = {"status": "NOT_LISTED",
+                                "detail": f"{name}'s data for {package} doesn't list this CVE; can't tell"}
+        result["checked_cves"] = checked
+        result["fixed_by_backport"] = [c for c, v in checked.items() if v["status"] == "FIXED_IN_PACKAGE"]
+        result["still_affects_package"] = [c for c, v in checked.items() if v["status"] == "STILL_AFFECTS_PACKAGE"]
+        result["not_listed"] = [c for c, v in checked.items() if v["status"] == "NOT_LISTED"]
+    vulns = sorted(open_cves.values(), key=lambda v: v["cve_id"], reverse=True)
+    _enrich_with_exploit_intel(vulns)
+    vulns.sort(key=lambda v: (bool(v.get("in_cisa_kev")), (v.get("epss") or {}).get("epss") or 0.0), reverse=True)
+    result["open_in_package_count"] = len(vulns)
+    result["open_in_package"] = vulns[:result_limit]
+    result["note"] = (f"From {name}'s own security data via OSV.dev, which accounts for fixes {name} backports "
+                      "without changing the upstream version. FIXED_IN_PACKAGE overrides an NVD version match. "
+                      "NOT_LISTED means the distro's data doesn't cover that CVE for this package.")
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Tools exposed to the agent
 # ---------------------------------------------------------------------------
 
@@ -1028,10 +1321,81 @@ def osint_resolve_domain(domain: str) -> Dict[str, Any]:
     return {"tool": "dns", **resolve_domain(domain)}
 
 
+def _cdn_note(org: str, tags: Sequence[str]) -> Optional[str]:
+    org = org.lower()
+    cdn_by_name = any(c in org for c in _CDN_NAMES) and not any(c in org for c in _CLOUD_HOSTING_NAMES)
+    if "cdn" in (tags or []) or cdn_by_name:
+        return ("This IP belongs to a CDN/edge network shared by many customers. Its open ports and services are "
+                "the CDN's, not the origin server's; the site owner can't close them and they are not findings "
+                "about the target.")
+    return None
+
+
+def _internetdb_host(ip_address: str) -> Dict[str, Any]:
+    """Shodan's free InternetDB: ports, software (CPEs), hostnames, tags and CVEs for an IP. No key, no banners."""
+    try:
+        resp = _http_get(f"{INTERNETDB_URL}/{ip_address}", retries=1)
+    except SourceError as exc:
+        return {"tool": "shodan", "error": str(exc)}
+    if resp.status_code == 404:
+        return {"tool": "shodan", "success": False, "ip": ip_address, "data_source": "Shodan InternetDB",
+                "info": f"Shodan InternetDB has no data for {ip_address}"}
+    if resp.status_code != 200:
+        return {"tool": "shodan", "error": f"Shodan InternetDB returned HTTP {resp.status_code}"}
+    try:
+        data = resp.json()
+        ports = sorted(int(p) for p in data.get("ports") or [])
+    except (ValueError, AttributeError, TypeError):
+        return {"tool": "shodan", "error": "Shodan InternetDB returned an unexpected response"}
+
+    software: List[Dict[str, Any]] = []
+    for cpe in data.get("cpes") or []:
+        parts = str(cpe).split(":")  # cpe:/a:vendor:product[:version]; "/o" entries are operating systems
+        if len(parts) < 4 or parts[1] not in ("/a", "/h"):
+            continue
+        vendor, product = parts[2].replace("_", " "), parts[3].replace("_", " ")
+        # Keep the vendor unless the product already names it: "http server" alone matches Oracle's and
+        # Microsoft's HTTP servers in KEV, "apache http server" only Apache's.
+        name = product if vendor in product else f"{vendor} {product}"
+        entry = {"name": _clean_banner(name, 80),
+                 "version": _clean_banner(parts[4], 40) if len(parts) > 4 and parts[4] else None,
+                 "source": "internetdb_cpe"}
+        if entry not in software:
+            software.append(entry)
+    tags = [str(tag) for tag in data.get("tags") or []]
+    result: Dict[str, Any] = {
+        "tool": "shodan",
+        "success": True,
+        "ip": ip_address,
+        "data_source": "Shodan InternetDB (no API key)",
+        "open_ports": ports,
+        "services": [{"port": p} for p in ports],
+        "hostnames": [_clean_banner(str(h), 253) for h in data.get("hostnames") or []],
+        "tags": tags,
+        "discovered_software": software,
+        "note": ("Free InternetDB data: open ports, software (from CPEs) and Shodan's inferred CVEs only. There are "
+                 "no banners, organisation or OS details, so services and distro packages can't be checked further. "
+                 "Add SHODAN_API_KEY for full results."),
+    }
+    cdn = _cdn_note("", tags)
+    if cdn:
+        result["cdn_note"] = cdn
+    kev = kev_matches_for_software([s["name"] for s in software])
+    if kev:
+        result["cisa_kev_product_matches"] = kev
+        result["cisa_kev_note"] = ("Products seen on this host have CVEs in CISA's Known Exploited Vulnerabilities "
+                                   "catalog. This shows real-world exploitation of the product family; it does not "
+                                   "confirm this host's version is affected.")
+    vulns = [str(v) for v in data.get("vulns") or [] if is_valid_cve(str(v))]
+    if vulns:
+        result["shodan_inferred_cves"] = sorted(vulns)[:50]
+        result["shodan_inferred_cves_note"] = "Shodan infers these from software versions; they are unverified."
+    return result
+
+
 def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> Dict[str, Any]:
-    """Look up a public IP (or a domain's primary IP) in Shodan's host database."""
-    if not keys.shodan:
-        return {"tool": "shodan", "error": f"Shodan API key not configured (get one at {KEY_SIGNUP_URLS['shodan']})"}
+    """Look up a public IP (or a domain's primary IP) in Shodan's host database. Without a key, falls back to
+    Shodan's free InternetDB (ports, software and CVEs, but no banners)."""
     target = (target or "").strip()
     domain_info = None
     ok, err = validate_public_ip(target)
@@ -1045,6 +1409,13 @@ def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> 
     else:
         return {"tool": "shodan", "error": err or f"Invalid target: {target!r}"}
 
+    if not keys.shodan:
+        result = _internetdb_host(ip_address)
+        if domain_info:
+            result["dns"] = domain_info
+        result["key_hint"] = f"Full Shodan results (banners, organisation, OS) need a key: {KEY_SIGNUP_URLS['shodan']}"
+        return result
+
     try:
         host = shodan.Shodan(keys.shodan).host(ip_address)
     except shodan.APIError as exc:
@@ -1056,12 +1427,15 @@ def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> 
     except Exception as exc:  # the shodan library can raise plain exceptions on network errors
         return {"tool": "shodan", "error": f"Shodan query failed: {redact(str(exc), keys)}"}
 
-    services, software = [], []
+    services, software, distro_packages = [], [], []
     for item in host.get("data", []) or []:
         if not item.get("port"):
             continue
         product, version = item.get("product"), item.get("version")
         server_header = _banner_server_header(item.get("data", ""))
+        distro_package = distro_package_from_banner(item.get("data", ""))
+        if distro_package:
+            distro_packages.append({**distro_package, "port": item.get("port")})
         services.append({
             "port": item.get("port"),
             "transport": item.get("transport", "tcp"),
@@ -1107,18 +1481,20 @@ def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> 
         "note": ("Versions come from service banners. Linux distributions often backport security fixes "
                  "without changing the version string, so banner-based findings need verification."),
     }
-    org = f"{host.get('org') or ''} {host.get('isp') or ''}".lower()
-    cdn_by_name = any(c in org for c in _CDN_NAMES) and not any(c in org for c in _CLOUD_HOSTING_NAMES)
-    if "cdn" in (host.get("tags") or []) or cdn_by_name:
-        result["cdn_note"] = ("This IP belongs to a CDN/edge network shared by many customers. Its open ports and "
-                              "services are the CDN's, not the origin server's; the site owner can't close them "
-                              "and they are not findings about the target.")
+    cdn = _cdn_note(f"{host.get('org') or ''} {host.get('isp') or ''}", host.get("tags") or [])
+    if cdn:
+        result["cdn_note"] = cdn
     kev = kev_matches_for_software([s["name"] for s in software])
     if kev:
         result["cisa_kev_product_matches"] = kev
         result["cisa_kev_note"] = ("Products/vendors seen on this host have CVEs in CISA's Known Exploited "
                                    "Vulnerabilities catalog. This shows real-world exploitation of the product "
                                    "family; it does not confirm this device's firmware is affected.")
+    if distro_packages:
+        result["distro_packages"] = distro_packages
+        result["distro_packages_note"] = ("These banners name the distro package. After the version check, run "
+                                          "osint_distro_patch_check with its affected CVE IDs: distros backport "
+                                          "fixes without changing the upstream version.")
     vulns = host.get("vulns")
     if vulns:
         vuln_ids = sorted(vulns if isinstance(vulns, list) else vulns.keys())
@@ -1128,6 +1504,274 @@ def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> 
         result["dns"] = domain_info
         result["note_shared_hosting"] = ("Hostnames/domains above belong to the IP and may include unrelated "
                                          "sites on shared or CDN infrastructure.")
+    return result
+
+
+def _rdap_base_url(ip_obj: Any) -> Optional[str]:
+    """The registry RDAP service for an address, from IANA's bootstrap file."""
+    services = _rdap_bootstrap_cache.get(ip_obj.version)
+    if services is None:
+        resp = _http_get(RDAP_BOOTSTRAP_URLS[ip_obj.version], timeout=30)
+        if resp.status_code != 200:
+            raise SourceError(f"IANA RDAP bootstrap returned HTTP {resp.status_code}")
+        try:
+            services = [(list(s[0]), list(s[1])) for s in resp.json().get("services", [])]
+        except (ValueError, AttributeError, TypeError, IndexError) as exc:
+            raise SourceError("IANA RDAP bootstrap returned an unexpected response") from exc
+        _rdap_bootstrap_cache.set(ip_obj.version, services)
+    best = None
+    for prefixes, urls in services:
+        for prefix in prefixes:
+            try:
+                network = ipaddress.ip_network(prefix, strict=False)
+            except ValueError:
+                continue
+            if ip_obj in network and (best is None or network.prefixlen > best[0]):
+                url = next((u for u in urls if u.startswith("https://")), None)
+                if url:
+                    best = (network.prefixlen, url)
+    return best[1] if best else None
+
+
+def _rdap_entities(entities: Any) -> Iterable[Dict[str, Any]]:
+    for entity in entities or []:
+        if isinstance(entity, dict):
+            yield entity
+            yield from _rdap_entities(entity.get("entities"))
+
+
+def _vcard(entity: Dict[str, Any], field_name: str) -> Optional[str]:
+    try:
+        for item in entity.get("vcardArray", [None, []])[1]:
+            if item[0] == field_name and isinstance(item[3], str):
+                return item[3]
+    except (IndexError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def osint_ip_owner(ip_address: str) -> Dict[str, Any]:
+    """Who an IP's network is registered to, from the regional internet registry (RDAP). No key needed."""
+    ok, err = validate_public_ip(ip_address or "")
+    if not ok:
+        return {"tool": "rdap", "error": err}
+    ip_obj = ipaddress.ip_address(ip_address.strip())
+    try:
+        base = _rdap_base_url(ip_obj)
+        if not base:
+            return {"tool": "rdap", "success": False, "ip": str(ip_obj),
+                    "info": "No registry lists this address block in IANA's RDAP bootstrap"}
+        resp = _http_get(f"{base.rstrip('/')}/ip/{ip_obj}", headers={"Accept": "application/rdap+json"})
+    except SourceError as exc:
+        return {"tool": "rdap", "error": str(exc)}
+    if resp.status_code == 404:
+        return {"tool": "rdap", "success": False, "ip": str(ip_obj), "info": "The registry has no record for this IP"}
+    if resp.status_code != 200:
+        return {"tool": "rdap", "error": f"RDAP registry returned HTTP {resp.status_code}"}
+    try:
+        data = resp.json()
+        entities = list(_rdap_entities(data.get("entities")))
+    except (ValueError, AttributeError):
+        return {"tool": "rdap", "error": "RDAP registry returned an unexpected response"}
+
+    def first(role: str, field_name: str) -> Optional[str]:
+        for entity in entities:
+            if role in (entity.get("roles") or []):
+                value = _vcard(entity, field_name)
+                if value:
+                    return _clean_banner(value, 120)
+        return None
+
+    cidrs = [f"{c.get('v4prefix') or c.get('v6prefix')}/{c.get('length')}"
+             for c in data.get("cidr0_cidrs") or [] if isinstance(c, dict) and c.get("length") is not None]
+    return {
+        "tool": "rdap",
+        "success": True,
+        "ip": str(ip_obj),
+        "organization": first("registrant", "fn") or first("administrative", "fn"),
+        "network_name": _clean_banner(str(data.get("name") or ""), 80) or None,
+        "network_range": (f"{data.get('startAddress')} - {data.get('endAddress')}"
+                          if data.get("startAddress") else None),
+        "cidr": cidrs[:3],
+        "country": _clean_banner(str(data.get("country") or ""), 8) or None,
+        "abuse_contact": first("abuse", "email"),
+        "registry": urlsplit(base).netloc,
+        "note": ("From the regional internet registry. The registered owner can differ from whoever runs the "
+                 "service, e.g. a cloud or hosting customer."),
+    }
+
+
+def _spamhaus_drop(version: int) -> Dict[str, Any]:
+    """Spamhaus DROP: networks hijacked or run by criminals, downloaded at most once a day."""
+    cached = _drop_cache.get(version)
+    if cached is not None:
+        return cached
+    resp = _http_get(SPAMHAUS_DROP_URLS[version], headers={"Accept": "application/json"}, timeout=30, retries=1)
+    if resp.status_code != 200:
+        raise SourceError(f"Spamhaus DROP returned HTTP {resp.status_code}")
+    networks, meta = [], {}
+    for line in resp.text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("type") == "metadata":
+            meta = row
+        elif row.get("cidr"):
+            try:
+                networks.append((ipaddress.ip_network(row["cidr"], strict=False), str(row.get("sblid") or "")))
+            except ValueError:
+                continue
+    if not networks:
+        raise SourceError("Spamhaus DROP returned no networks")
+    updated = (datetime.fromtimestamp(meta["timestamp"], tz=timezone.utc).date().isoformat()
+               if isinstance(meta.get("timestamp"), (int, float)) else None)
+    data = {"networks": networks, "updated": updated, "copyright": meta.get("copyright") or "The Spamhaus Project"}
+    _drop_cache.set(version, data)
+    return data
+
+
+def _greynoise(ip: str, keys: ApiKeys) -> Dict[str, Any]:
+    headers = {"key": keys.greynoise} if keys.greynoise else {}
+    resp = _http_get(f"{GREYNOISE_COMMUNITY_URL}/{ip}", headers=headers, retries=1)
+    if resp.status_code == 429:
+        raise SourceError("GreyNoise limit reached (10 lookups a day without a key)")
+    if resp.status_code in (401, 403):
+        raise SourceError(f"GreyNoise rejected the API key (HTTP {resp.status_code})")
+    if resp.status_code not in (200, 404):
+        raise SourceError(f"GreyNoise returned HTTP {resp.status_code}")
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise SourceError("GreyNoise returned an unexpected response") from exc
+    noise, riot = bool(data.get("noise")), bool(data.get("riot"))
+    if riot:
+        meaning = "a known business or service IP (GreyNoise RIOT), e.g. a public DNS, CDN or SaaS address"
+    elif noise:
+        meaning = f"seen scanning the internet; GreyNoise classifies it as {data.get('classification') or 'unknown'}"
+    else:
+        meaning = "not seen scanning the internet and not a known business service"
+    return {"noise": noise, "riot": riot, "classification": data.get("classification"),
+            "name": _clean_banner(str(data.get("name") or ""), 80) or None,
+            "last_seen": data.get("last_seen"), "meaning": meaning}
+
+
+def osint_threat_lists_check(ip_address: str, keys: Optional[ApiKeys] = None) -> Dict[str, Any]:
+    """Keyless reputation: Spamhaus DROP (criminal or hijacked networks) and GreyNoise (internet scanners)."""
+    ok, err = validate_public_ip(ip_address or "")
+    if not ok:
+        return {"tool": "threat_lists", "error": err}
+    ip_obj = ipaddress.ip_address(ip_address.strip())
+    keys = keys or ApiKeys()
+    result: Dict[str, Any] = {"tool": "threat_lists", "success": True, "ip": str(ip_obj)}
+    try:
+        drop = _spamhaus_drop(ip_obj.version)
+        hit = next(((net, sbl) for net, sbl in drop["networks"] if ip_obj in net), None)
+        result["spamhaus_drop"] = {
+            "listed": bool(hit),
+            "network": str(hit[0]) if hit else None,
+            "sbl_id": hit[1] if hit else None,
+            "meaning": ("listed: the whole network is hijacked or run by criminals; treat traffic from it as hostile"
+                        if hit else "not listed. DROP only covers the worst networks, so this is weak evidence "
+                                    "that the IP is clean"),
+            "list_date": drop["updated"],
+            "credit": f"Spamhaus DROP, {drop['copyright']}",
+        }
+    except SourceError as exc:
+        result["spamhaus_drop"] = {"error": str(exc)}
+    try:
+        result["greynoise"] = _greynoise(str(ip_obj), keys)
+    except SourceError as exc:
+        result["greynoise"] = {"error": redact(str(exc), keys)}
+    if all("error" in result[k] for k in ("spamhaus_drop", "greynoise")):
+        return {"tool": "threat_lists", "error": f"Spamhaus DROP: {result['spamhaus_drop']['error']}; "
+                                                 f"GreyNoise: {result['greynoise']['error']}"}
+    return result
+
+
+def osint_subdomains(domain: str, limit: int = 100) -> Dict[str, Any]:
+    """Hostnames under a domain that have had TLS certificates, from public certificate transparency logs."""
+    domain = (domain or "").strip().lower().rstrip(".")
+    if not is_valid_domain(domain):
+        return {"tool": "subdomains", "error": f"Invalid domain: {domain!r}"}
+    names: set = set()
+    source = None
+    try:
+        resp = _http_get(CRTSH_URL, params={"q": domain, "output": "json", "exclude": "expired",
+                                            "deduplicate": "Y"}, timeout=45, retries=1)
+        if resp.status_code == 200 and len(resp.content) < 32 * 1024 * 1024:
+            for row in resp.json():
+                names.update(str(row.get("name_value") or "").split("\n"))
+            source = "crt.sh"
+    except (SourceError, ValueError, AttributeError, TypeError):
+        pass
+    if source is None:  # crt.sh is often overloaded; Cert Spotter allows a few keyless lookups an hour
+        try:
+            resp = _http_get(CERTSPOTTER_URL, params={"domain": domain, "include_subdomains": "true",
+                                                      "expand": "dns_names"}, timeout=30, retries=0)
+            if resp.status_code == 200:
+                for row in resp.json():
+                    names.update(str(n) for n in row.get("dns_names") or [])
+                source = "Cert Spotter"
+            elif resp.status_code == 429:
+                return {"tool": "subdomains", "error": "crt.sh is unavailable and Cert Spotter's hourly limit is "
+                                                      "reached; try again later"}
+        except (SourceError, ValueError, AttributeError, TypeError):
+            pass
+    if source is None:
+        return {"tool": "subdomains", "error": "Certificate transparency search is unavailable (crt.sh and Cert Spotter)"}
+    hosts, wildcards = set(), set()
+    for name in names:
+        name = name.strip().lower().rstrip(".")
+        wildcard = name.startswith("*.")
+        name = name[2:] if wildcard else name
+        if (name == domain or name.endswith("." + domain)) and is_valid_domain(name):
+            (wildcards if wildcard else hosts).add(name)
+    found = sorted(hosts)
+    return {
+        "tool": "subdomains",
+        "success": bool(found or wildcards),
+        "domain": domain,
+        "source": source,
+        "count": len(found),
+        "subdomains": found[:limit],
+        "wildcard_certificates": sorted(wildcards)[:20],
+        "note": ("From public certificate transparency logs: names that have had TLS certificates. They may no "
+                 "longer exist or resolve. Shodan lookups are quota-limited, so check only hosts that matter."),
+        **({} if found or wildcards else {"info": f"No certificates found for {domain}"}),
+    }
+
+
+def _cvedb_lookup(cve_id: str, reference_limit: int = 5) -> Optional[Dict[str, Any]]:
+    """Shodan's free CVEDB record for one CVE, used only when NVD can't answer."""
+    try:
+        resp = _http_get(f"{CVEDB_URL}/{cve_id}", retries=1)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+    except (SourceError, ValueError):
+        return None
+    if not isinstance(data, dict) or str(data.get("cve_id") or "").upper() != cve_id:
+        return None
+    for field_name, label in (("cvss_v4", "4.0"), ("cvss_v3", "3.x"), ("cvss_v2", "2.0")):
+        if isinstance(data.get(field_name), (int, float)):
+            score, version = float(data[field_name]), label
+            break
+    else:
+        score, version = None, None
+    result = {
+        "tool": "nvd", "success": True, "cve_id": cve_id,
+        "data_source": "Shodan CVEDB (NVD unavailable)",
+        "published": (data.get("published_time") or "")[:10],
+        "description": _clean_banner(str(data.get("summary") or ""), 2000),
+        "cvss_score": score, "cvss_version": version, "severity": severity_from_score(score),
+        "references": [{"url": u} for u in (data.get("references") or [])[:reference_limit]],
+        "affected_products": [str(c) for c in (data.get("cpes") or [])[:15]],
+        "note": "NVD couldn't be reached, so these details come from Shodan's CVEDB, a copy of NVD data.",
+    }
+    if isinstance(data.get("epss"), (int, float)):
+        result["epss"] = {"epss": round(float(data["epss"]), 5), "percent": epss_percent(float(data["epss"])),
+                          "percentile": data.get("ranking_epss")}
     return result
 
 
@@ -1272,7 +1916,15 @@ def osint_nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limi
     try:
         data = _nvd_get(NVD_CVE_URL, {"cveId": cve_id}, keys)
     except SourceError as exc:
-        return {"tool": "nvd", "error": str(exc)}
+        fallback = _cvedb_lookup(cve_id, reference_limit)
+        if not fallback:
+            return {"tool": "nvd", "error": str(exc)}
+        kev = kev_lookup_many([cve_id]).get(cve_id)  # KEV status from CISA itself, not the copy
+        if kev:
+            fallback["cisa_kev"] = kev
+        fallback["in_cisa_kev"] = bool(kev)
+        fallback["nvd_error"] = str(exc)
+        return fallback
     vulns = data.get("vulnerabilities", [])
     if not vulns:
         return {"tool": "nvd", "success": False, "info": f"{cve_id} not found in NVD"}
@@ -1496,6 +2148,7 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
         "upgrade_to_at_least": minimum_safe_version(affected),
         "patch_status_summary": {"fix_listed": len(affected) - len(no_fix), "no_fix_listed": len(no_fix)},
         "no_fix_listed_cves": no_fix,
+        "affected_cve_ids": [v["cve_id"] for v in affected],  # every one, for osint_distro_patch_check
         "affected_cves": affected[:result_limit],
         "needs_review_count": len(unanalyzed),
         "needs_review_cves": unanalyzed[: max(3, result_limit // 2)],
@@ -1554,4 +2207,8 @@ TOOL_FUNCTIONS = {
     "osint_cisa_kev_check": osint_cisa_kev_check,
     "osint_nvd_lookup": osint_nvd_lookup,
     "osint_version_specific_vulnerability_check": osint_version_specific_vulnerability_check,
+    "osint_distro_patch_check": osint_distro_patch_check,
+    "osint_ip_owner": osint_ip_owner,
+    "osint_threat_lists_check": osint_threat_lists_check,
+    "osint_subdomains": osint_subdomains,
 }

@@ -30,10 +30,11 @@ KEY_FIELDS = {
     "virustotal": ("VirusTotal", "VIRUSTOTAL_API_KEY", "malicious/suspicious detections", False),
     "abuseipdb": ("AbuseIPDB", "ABUSEIPDB_API_KEY", "IP abuse reports", False),
     "nvd": ("NVD", "NVD_API_KEY", "faster CVE lookups", False),
+    "greynoise": ("GreyNoise", "GREYNOISE_API_KEY", "more scanner lookups than the 10 a day allowed without one", False),
 }
 # Which key a tool depends on, so missing-key errors can link to the sign-up page.
 TOOL_KEYS = {"osint_shodan_search": "shodan", "osint_virustotal_check": "virustotal",
-             "osint_abuseipdb_check": "abuseipdb"}
+             "osint_abuseipdb_check": "abuseipdb", "osint_threat_lists_check": "greynoise"}
 TOOL_LABELS = {
     "osint_resolve_domain": "DNS resolution",
     "osint_shodan_search": "Shodan host lookup",
@@ -43,6 +44,10 @@ TOOL_LABELS = {
     "osint_nvd_lookup": "NVD CVE lookup",
     "osint_cisa_kev_check": "CISA KEV check",
     "osint_cve_search": "NVD keyword search",
+    "osint_distro_patch_check": "Distro patch check (Ubuntu/Debian via OSV)",
+    "osint_ip_owner": "Network owner (internet registry)",
+    "osint_threat_lists_check": "Spamhaus DROP and GreyNoise",
+    "osint_subdomains": "Subdomains (certificate logs)",
 }
 
 
@@ -79,7 +84,7 @@ def server_keys() -> ApiKeys:
 
 # Keys whose use costs the operator quota or money. A shared NVD key only raises NVD's rate limit,
 # so it doesn't count toward the shared-key quota.
-QUOTA_KEYS = ("cohere", "shodan", "virustotal", "abuseipdb")
+QUOTA_KEYS = ("cohere", "shodan", "virustotal", "abuseipdb", "greynoise")
 
 
 def client_id() -> str:
@@ -153,7 +158,8 @@ Include a version for software. Without one, results are generic.
 1. The agent plans which tools apply to your target.
 2. It gathers evidence from the sources below.
 3. Vulnerabilities are matched to exact versions using NVD's affected-version data, then ranked by CISA KEV (exploited in the wild), EPSS and CVSS. Each one shows the fix NVD lists.
-4. It writes a report that cites each source.
+4. For Ubuntu and Debian packages named in banners (e.g. OpenSSH), the distro's own data shows which CVEs are already fixed by a backport.
+5. It writes a report that cites each source, and the key facts list which sources weren't checked.
 """
     )
     st.markdown("## Data sources")
@@ -165,10 +171,17 @@ Include a version for software. Without one, results are generic.
 - [NVD](https://nvd.nist.gov/): CVE details and affected versions
 - [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog): exploited vulnerabilities
 - [FIRST EPSS](https://www.first.org/epss/): exploit probability
+- [OSV.dev](https://osv.dev/): Ubuntu and Debian fixes for installed packages
+- Internet registries (RDAP): who owns an IP's network
+- [Spamhaus DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/) and [GreyNoise](https://www.greynoise.io/): hijacked networks and internet scanners
+- [crt.sh](https://crt.sh/) and [Cert Spotter](https://sslmate.com/ct_search_api/): subdomains from certificate logs
+
+Without a Shodan key, Shodan's free [InternetDB](https://internetdb.shodan.io/) is used (ports and software, no banners).
 """
     )
     st.caption("This product uses data from the NVD API but is not endorsed or certified by the NVD. "
-               "Not affiliated with or endorsed by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA or FIRST.")
+               "Not affiliated with or endorsed by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA, FIRST, "
+               "Spamhaus, GreyNoise or the internet registries. Spamhaus DROP data (c) The Spamhaus Project.")
 
 # --- API keys ---------------------------------------------------------------
 server = server_keys()
@@ -273,10 +286,14 @@ if run_clicked:
                        f"{int(quota_wait // 60) + 1} min, or add your own keys under API Keys Configuration.")
     else:
         st.session_state.last_run = time.time()
-        missing = [key_link(n) for n in ("shodan", "virustotal", "abuseipdb") if not getattr(keys, n)]
-        if missing and target.type in ("ip", "domain"):
-            st.info(f"Missing keys: {', '.join(missing)}. Those sources will be skipped. "
-                    "Click a name to get a free key.")
+        missing = [key_link(n) for n in ("virustotal", "abuseipdb") if not getattr(keys, n)]
+        if target.type in ("ip", "domain") and (missing or not keys.shodan):
+            notes = []
+            if not keys.shodan:
+                notes.append(f"No {key_link('shodan')} key, so Shodan's free InternetDB is used (no banners).")
+            if missing:
+                notes.append(f"Missing keys: {', '.join(missing)}. Those sources will be skipped.")
+            st.info(" ".join(notes) + " Click a name to get a free key.")
 
         with st.status(f"Analyzing {escape_markdown(target.value)} ({target.type})...", expanded=True) as status:
             def on_event(kind, payload):

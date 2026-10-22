@@ -7,6 +7,17 @@ import ai
 from osint_tools import ApiKeys
 
 
+@pytest.fixture(autouse=True)
+def offline_keyless_sources(monkeypatch):
+    import osint_tools as t
+    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "osint_ip_owner",
+                        lambda ip_address: {"tool": "rdap", "success": False, "info": "offline"})
+    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "osint_threat_lists_check",
+                        lambda ip_address, keys=None: {"tool": "threat_lists", "success": False, "info": "offline"})
+    monkeypatch.setattr(t, "_internetdb_host",
+                        lambda ip: {"tool": "shodan", "success": False, "info": "offline"})
+
+
 def _call(call_id, name, args):
     return SimpleNamespace(id=call_id, function=SimpleNamespace(name=name, arguments=json.dumps(args)))
 
@@ -92,7 +103,8 @@ def test_baseline_lookups_run_in_code_before_the_model():
     client = FakeClient([_response(text="report")])
     result = ai.run_osint_agent("8.8.8.8", ApiKeys(), "Quick Scan", client=client)
     baseline = [r.tool for r in result.tool_calls if r.iteration == 0]
-    assert baseline == ["osint_shodan_search", "osint_virustotal_check", "osint_abuseipdb_check"]
+    assert baseline == ["osint_shodan_search", "osint_virustotal_check", "osint_abuseipdb_check",
+                        "osint_ip_owner", "osint_threat_lists_check"]
     first_prompt = client.requests[0]["messages"][1]["content"]
     assert "<baseline_results>" in first_prompt and "VirusTotal API key not configured" in first_prompt
     # CVE targets have no baseline (nothing exposure-related to look up).
@@ -295,7 +307,9 @@ def test_key_facts_are_built_from_tool_data_without_the_model():
     assert facts["VirusTotal"].startswith("0 malicious, 0 suspicious of 91")
     assert facts["CISA KEV: related (product family or vendor)"] == "CVE-2021-33044 (EPSS 99.99%)"
     assert facts["CISA KEV: confirmed for this target"] == "none"
-    assert facts["Sources that failed or were skipped"] == "abuseipdb"
+    assert facts["Sources checked"] == "Shodan, VirusTotal"
+    assert facts["Not checked (no claim can be made from these)"] == "AbuseIPDB (no API key)"
+    assert "Sources that failed or were skipped" not in facts
 
 
 def test_vendor_wide_kev_checks_are_not_counted_as_related():
@@ -355,3 +369,44 @@ def test_no_newly_exploited_fact_without_recent_kev_entries():
                             model="m", tool_calls=[ai.ToolCallRecord(nvd[0], {}, 1, "t", 1, nvd[1])])
     labels = [f["label"] for f in ai.build_key_facts(result)]
     assert not any(label.startswith("Newly exploited") for label in labels)
+
+
+def test_keyless_baseline_lookups_do_not_use_the_tool_budget():
+    client = FakeClient([_response(text="report")])
+    ai.run_osint_agent("8.8.8.8", ApiKeys(), "Quick Scan", client=client)
+    runner = ai._ToolRunner(ApiKeys(), ai.COMPLEXITY_PROFILES["Quick Scan"])
+    runner.run("osint_ip_owner", '{"ip_address": "8.8.8.8"}', iteration=0, free=True)
+    runner.run("osint_resolve_domain", '{"domain": "example.com"}', iteration=0)
+    assert runner.calls_remaining == ai.COMPLEXITY_PROFILES["Quick Scan"]["max_tool_calls"] - 1
+
+
+def test_new_tools_are_offered_to_the_model():
+    names = {t["function"]["name"] for t in ai.OSINT_TOOLS}
+    assert {"osint_distro_patch_check", "osint_ip_owner", "osint_threat_lists_check", "osint_subdomains"} <= names
+    assert names == set(ai.TOOL_FUNCTIONS)
+    # The model can't pass internal limits through tool arguments.
+    assert ai._coerce_args("osint_subdomains", {"domain": "example.com", "limit": 10000}) == {"domain": "example.com"}
+
+
+def test_distro_backport_overrides_an_nvd_version_match():
+    # NVD's upstream range says OpenSSH 8.9p1 is affected; Ubuntu's package already carries the fix.
+    version = ("osint_version_specific_vulnerability_check", {
+        "tool": "version_check", "success": True, "software": "OpenSSH", "version": "8.9p1",
+        "affected_cves": [{"cve_id": "CVE-2024-6387", "severity": "HIGH", "in_cisa_kev": True},
+                          {"cve_id": "CVE-2025-26465", "severity": "MEDIUM", "in_cisa_kev": True}],
+        "affected_in_cisa_kev": ["CVE-2024-6387", "CVE-2025-26465"]})
+    distro = ("osint_distro_patch_check", {
+        "tool": "distro_patch_check", "success": True, "distro": "Ubuntu", "release": "22.04",
+        "package": "openssh", "package_version": "8.9p1-3ubuntu0.10",
+        "checked_cves": {"CVE-2024-6387": {}, "CVE-2025-26465": {}},
+        "fixed_by_backport": ["CVE-2024-6387"], "still_affects_package": ["CVE-2025-26465"], "not_listed": [],
+        "open_in_package": [{"cve_id": "CVE-2025-26465", "in_cisa_kev": True}]})
+    summary = _summary([version, distro], target="OpenSSH 8.9p1")
+    assert summary["cisa_kev_confirmed"] == ["CVE-2025-26465"]
+    assert summary["fixed_by_distro_backport"] == ["CVE-2024-6387"]
+    assert "CVE-2024-6387" not in summary["cisa_kev_related"]
+    result = ai.AgentResult(target=ai.classify_target("OpenSSH 8.9p1"), report="", complexity="Quick Scan", model="m",
+                            tool_calls=[ai.ToolCallRecord(n, {}, 1, "t", 1, r) for n, r in (version, distro)])
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert facts["Ubuntu 22.04 openssh 8.9p1-3ubuntu0.10 (distro data via OSV)"].startswith(
+        "of 2 CVEs checked: 1 fixed by the distro backport, 1 still affect this package")

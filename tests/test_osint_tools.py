@@ -147,7 +147,126 @@ def test_tools_reject_invalid_input_without_network():
     assert "error" in t.osint_shodan_search("127.0.0.1", keys)
     assert "error" in t.osint_nvd_lookup("CVE-2021-44228?foo=bar")
     assert "error" in t.osint_cisa_kev_check()
-    assert "error" in t.osint_shodan_search("8.8.8.8", t.ApiKeys())  # missing key
+    assert "error" in t.osint_shodan_search("127.0.0.1", t.ApiKeys())  # no key: still refused before InternetDB
+    assert "error" in t.osint_ip_owner("10.0.0.1")
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body, self.headers, self.content = status, body, {}, b"{}"
+
+    def json(self):
+        return self._body
+
+
+def test_shodan_without_a_key_falls_back_to_internetdb(monkeypatch):
+    body = {"ip": "45.33.32.156", "ports": [80, 22], "hostnames": ["scanme.nmap.org"], "tags": [],
+            "cpes": ["cpe:/a:apache:http_server:2.4.7", "cpe:/a:openbsd:openssh:6.6.1p1", "cpe:/o:canonical:ubuntu_linux"],
+            "vulns": ["CVE-2014-0226"]}
+    seen = []
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: seen.append(url) or _Resp(200, body))
+    monkeypatch.setattr(t, "kev_matches_for_software", lambda names: {})
+    r = t.osint_shodan_search("45.33.32.156", t.ApiKeys())
+    assert seen == ["https://internetdb.shodan.io/45.33.32.156"]
+    assert r["success"] and r["data_source"].startswith("Shodan InternetDB") and r["open_ports"] == [22, 80]
+    # The vendor is kept, so "http server" can't match other vendors' HTTP servers in KEV; OS CPEs are skipped.
+    assert [(s["name"], s["version"]) for s in r["discovered_software"]] == [
+        ("apache http server", "2.4.7"), ("openbsd openssh", "6.6.1p1")]
+    assert r["shodan_inferred_cves"] == ["CVE-2014-0226"] and "key_hint" in r
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(404, {"detail": "No information available"}))
+    assert t.osint_shodan_search("45.33.32.156", t.ApiKeys())["success"] is False
+
+
+def test_vendor_prefixed_cpe_names_resolve_to_the_product():
+    assert t.resolve_cpe_alias("openbsd openssh") == ("openbsd", "openssh")
+    assert t.resolve_cpe_alias("f5 nginx") == ("*", "nginx")
+    assert t.resolve_cpe_alias("someone openssh") is None
+
+
+class _TextResp(_Resp):
+    def __init__(self, status, text):
+        super().__init__(status, None)
+        self.text = text
+
+
+DROP_V4 = ('{"cidr":"1.10.16.0/20","sblid":"SBL256894","rir":"apnic"}\n'
+           '{"type":"metadata","timestamp":1792673042,"copyright":"(c) 2026 The Spamhaus Project SLU"}\n')
+
+
+def test_threat_lists_check_spamhaus_drop_and_greynoise(monkeypatch):
+    monkeypatch.setattr(t, "_drop_cache", t._TTLCache(60))
+    downloads = []
+
+    def fake_get(url, **k):
+        if "spamhaus" in url:
+            downloads.append(url)
+            return _TextResp(200, DROP_V4)
+        return _Resp(200, {"noise": True, "riot": False, "classification": "malicious", "name": "unknown"})
+    monkeypatch.setattr(t, "_http_get", fake_get)
+    listed = t.osint_threat_lists_check("1.10.16.5")
+    assert listed["spamhaus_drop"]["listed"] and listed["spamhaus_drop"]["sbl_id"] == "SBL256894"
+    assert "Spamhaus Project" in listed["spamhaus_drop"]["credit"]
+    assert "malicious" in listed["greynoise"]["meaning"]
+    clean = t.osint_threat_lists_check("8.8.8.8")
+    assert clean["spamhaus_drop"]["listed"] is False and "weak evidence" in clean["spamhaus_drop"]["meaning"]
+    assert len(downloads) == 1  # Spamhaus asks for at most one download a day
+
+
+def test_threat_lists_check_survives_one_source_failing(monkeypatch):
+    monkeypatch.setattr(t, "_drop_cache", t._TTLCache(60))
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: _TextResp(200, DROP_V4) if "spamhaus" in url
+                        else _Resp(429, {}))
+    r = t.osint_threat_lists_check("8.8.8.8")
+    assert r["success"] and "10 lookups a day" in r["greynoise"]["error"]
+    monkeypatch.setattr(t, "_drop_cache", t._TTLCache(60))
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(503, {}))
+    assert "error" in t.osint_threat_lists_check("8.8.8.8")
+
+
+def test_subdomains_come_from_certificate_logs_and_are_validated(monkeypatch):
+    rows = [{"name_value": "nmap.org\nwww.nmap.org\n*.nmap.org"}, {"name_value": "evil.com\nbad name.nmap.org"},
+            {"name_value": "svn.nmap.org"}]
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(200, rows))
+    r = t.osint_subdomains("nmap.org")
+    assert r["source"] == "crt.sh" and r["subdomains"] == ["nmap.org", "svn.nmap.org", "www.nmap.org"]
+    assert r["wildcard_certificates"] == ["nmap.org"]
+    # crt.sh down: Cert Spotter is tried instead.
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(502, None) if "crt.sh" in url
+                        else _Resp(200, [{"dns_names": ["mail.nmap.org"]}]))
+    assert t.osint_subdomains("nmap.org")["subdomains"] == ["mail.nmap.org"]
+    assert "error" in t.osint_subdomains("not a domain")
+
+
+def test_nvd_lookup_falls_back_to_cvedb_when_nvd_fails(monkeypatch):
+    def nvd_down(*a, **k):
+        raise t.SourceError("NVD rate limit reached")
+    monkeypatch.setattr(t, "_nvd_get", nvd_down)
+    monkeypatch.setattr(t, "kev_lookup_many", lambda ids: {})
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(200, {
+        "cve_id": "CVE-2024-6387", "summary": "regreSSHion", "cvss_v3": 8.1, "epss": 0.99506, "ranking_epss": 0.9995,
+        "references": ["https://example.com/a"], "published_time": "2024-07-01T13:15:00", "cpes": []}))
+    r = t.osint_nvd_lookup("CVE-2024-6387")
+    assert r["success"] and r["data_source"].startswith("Shodan CVEDB")
+    assert (r["cvss_score"], r["severity"], r["epss"]["percent"]) == (8.1, "HIGH", "99.51%")
+    assert r["in_cisa_kev"] is False and r["nvd_error"] == "NVD rate limit reached"
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(404, {}))
+    assert t.osint_nvd_lookup("CVE-2024-6387")["error"] == "NVD rate limit reached"
+
+
+def test_ip_owner_reads_the_registry_record(monkeypatch):
+    bootstrap = {"services": [[["8.0.0.0/8"], ["http://rdap.arin.net/registry/", "https://rdap.arin.net/registry/"]]]}
+    record = {"name": "GOGL", "startAddress": "8.8.8.0", "endAddress": "8.8.8.255",
+              "cidr0_cidrs": [{"v4prefix": "8.8.8.0", "length": 24}],
+              "entities": [{"roles": ["registrant"], "vcardArray": ["vcard", [["fn", {}, "text", "Google LLC"]]],
+                            "entities": [{"roles": ["abuse"], "vcardArray": ["vcard", [
+                                ["email", {}, "text", "network-abuse@google.com"]]]}]}]}
+    urls = []
+    monkeypatch.setattr(t, "_rdap_bootstrap_cache", t._TTLCache(60))
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: urls.append(url) or _Resp(200, bootstrap if "iana" in url else record))
+    r = t.osint_ip_owner("8.8.8.8")
+    assert urls[-1] == "https://rdap.arin.net/registry/ip/8.8.8.8"  # https only
+    assert (r["organization"], r["cidr"], r["abuse_contact"], r["registry"]) == (
+        "Google LLC", ["8.8.8.0/24"], "network-abuse@google.com", "rdap.arin.net")
 
 
 def test_extract_version_accepts_single_number():
@@ -336,6 +455,73 @@ def test_version_check_ranks_by_kev_then_epss_and_reports_patch_status(monkeypat
     kev_entry = result["affected_cves"][0]
     assert kev_entry["recently_added_to_kev"] is True and kev_entry["days_in_kev"] == 5
     assert kev_entry["patch_status"] == "fixed in versions later than 1.5 (per NVD)"
+
+
+@pytest.mark.parametrize("a, b, expected", [
+    ("1:8.9p1-3ubuntu0.6", "1:8.9p1-3ubuntu0.10", -1),
+    ("1:9.2p1-2+deb12u3", "1:9.2p1-2+deb12u2", 1),
+    ("1.0~rc1-1", "1.0-1", -1),
+    ("1:1.0-1", "2.0-1", 1),
+    ("2.4.62-1", "2.4.9-1", 1),
+    ("1:8.9p1-3ubuntu0.6", "1:8.9p1-3ubuntu0.6", 0),
+    ("8.9p1-3", "8.9p1-3ubuntu1", -1),
+])
+def test_compare_dpkg_versions(a, b, expected):
+    assert t.compare_dpkg_versions(a, b) == expected
+
+
+def test_distro_package_is_read_from_banners_that_name_it():
+    assert t.distro_package_from_banner("SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6\r\n") == {
+        "distro": "Ubuntu", "package": "openssh", "package_version": "8.9p1-3ubuntu0.6"}
+    assert t.distro_package_from_banner("SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3")["package_version"] == "9.2p1-2+deb12u3"
+    assert t.distro_package_from_banner("Server: Apache/2.4.52 (Ubuntu)") is None
+    assert t.distro_package_from_banner("OpenSSH_" + "_" * 50000) is None
+
+
+def _fake_osv(monkeypatch, data):
+    monkeypatch.setattr(t, "_osv_package", lambda ecosystem, package: data.get(ecosystem, {"versions": [], "records": []}))
+    monkeypatch.setattr(t, "_enrich_with_exploit_intel", lambda vulns: None)
+
+
+JAMMY = {"Ubuntu:22.04:LTS": {"versions": ["8.9p1-3ubuntu0.6", "8.9p1-3ubuntu0.10"], "records": [
+    {"cve_id": "CVE-2024-6387", "ranges": [[{"introduced": "0"}, {"fixed": "1:8.9p1-3ubuntu0.10"}]], "versions": [],
+     "availability": "No subscription required"},
+    {"cve_id": "CVE-2023-48795", "ranges": [[{"introduced": "0"}, {"fixed": "1:8.9p1-3ubuntu0.5"}]], "versions": []},
+    {"cve_id": "CVE-2016-20012", "ranges": [[{"introduced": "0"}]], "versions": []},
+]}}
+
+
+def test_distro_check_separates_backported_fixes_from_open_cves(monkeypatch):
+    _fake_osv(monkeypatch, JAMMY)
+    r = t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu",
+                                   cve_ids=["CVE-2024-6387", "CVE-2023-48795", "CVE-2099-0001"])
+    assert r["release"] == "22.04" and r["osv_ecosystem"] == "Ubuntu:22.04:LTS"
+    assert r["fixed_by_backport"] == ["CVE-2023-48795"]
+    assert r["still_affects_package"] == ["CVE-2024-6387"]
+    assert r["checked_cves"]["CVE-2024-6387"]["package_fix"] == "fixed in package 1:8.9p1-3ubuntu0.10"
+    assert r["not_listed"] == ["CVE-2099-0001"]
+    assert {v["cve_id"] for v in r["open_in_package"]} == {"CVE-2024-6387", "CVE-2016-20012"}
+    unfixed = next(v for v in r["open_in_package"] if v["cve_id"] == "CVE-2016-20012")
+    assert unfixed["package_fix"] == "Ubuntu has not released a fix yet"
+    # After the update, the same CVE counts as fixed by the backport.
+    assert t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.10", "Ubuntu",
+                                      cve_ids=["CVE-2024-6387"])["fixed_by_backport"] == ["CVE-2024-6387"]
+
+
+def test_distro_release_must_be_unambiguous(monkeypatch):
+    both = {"versions": ["9.2p1-2"], "records": []}
+    _fake_osv(monkeypatch, {"Debian:13": both, "Debian:12": both})
+    r = t.osint_distro_patch_check("openssh", "9.2p1-2", "Debian")
+    assert r["success"] is False and "several Debian releases (13, 12)" in r["info"]
+    # Debian security updates name their release, so no lookup is needed to place them.
+    assert t.osint_distro_patch_check("openssh", "9.2p1-2+deb12u3", "Debian")["release"] == "12"
+    assert "Unknown Ubuntu release" in t.osint_distro_patch_check("openssh", "1.0-1", "Ubuntu", release="9.99")["error"]
+
+
+def test_distro_check_rejects_bad_input_without_network():
+    assert "error" in t.osint_distro_patch_check("openssh", "1.0", "Fedora")
+    assert "error" in t.osint_distro_patch_check("open ssh;rm", "1.0", "Ubuntu")
+    assert "error" in t.osint_distro_patch_check("openssh", "x" * 200, "Ubuntu")
 
 
 def test_api_error_detail_is_extracted_and_redacted():
