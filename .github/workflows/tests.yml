@@ -35,7 +35,7 @@ jobs:
       # Catches real bugs only (syntax errors, undefined names), not style
       - name: Lint (ruff)
         run: |
-          pip install ruff==0.16.10
+          pip install ruff==0.17.1
           ruff check --select E9,F63,F7,F82 .
 
       - name: Tests
