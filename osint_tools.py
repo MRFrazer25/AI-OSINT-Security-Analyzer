@@ -411,6 +411,22 @@ SOFTWARE_CPE_ALIASES: Dict[str, Tuple[str, str]] = {
     "squid": ("squid-cache", "squid"),
     "haproxy": ("haproxy", "haproxy"),
     "samba": ("samba", "samba"),
+    "next.js": ("*", "next.js"),
+    "nextjs": ("*", "next.js"),
+    "vercel next.js": ("*", "next.js"),
+    "react": ("facebook", "react"),
+    "express": ("openjsf", "express"),
+    "express.js": ("openjsf", "express"),
+    "expressjs": ("openjsf", "express"),
+    "netscaler": ("citrix", "netscaler_application_delivery_controller"),
+    "netscaler adc": ("citrix", "netscaler_application_delivery_controller"),
+    "citrix netscaler": ("citrix", "netscaler_application_delivery_controller"),
+    "citrix netscaler adc": ("citrix", "netscaler_application_delivery_controller"),
+    "netscaler gateway": ("citrix", "netscaler_gateway"),
+    "citrix netscaler gateway": ("citrix", "netscaler_gateway"),
+    "pan-os": ("paloaltonetworks", "pan-os"),
+    "fortios": ("fortinet", "fortios"),
+    "ivanti connect secure": ("ivanti", "connect_secure"),
 }
 
 # Placeholder words a model may pass instead of a real product name.
@@ -441,7 +457,10 @@ def extract_version(text: Optional[str]) -> Optional[str]:
     """Pull the first version-looking token out of a string ("OpenSSH_8.9p1 Ubuntu" -> "8.9p1")."""
     if not text:
         return None
-    match = re.search(r"(\d+(?:\.\d+)*[a-z0-9]*)", str(text), re.IGNORECASE)
+    # Hyphenated parts are kept only when they're builds, hotfixes or pre-releases (NetScaler "14.1-66.68",
+    # PAN-OS "10.2.7-h1", "1.0.0-rc1"), never distro revisions such as "1.18.0-1ubuntu1".
+    match = re.search(r"(\d+(?:\.\d+)*(?:-(?:\d+\.\d+|h\d+|(?:rc|alpha|beta|pre)\d*)(?![a-z0-9+~]))?[a-z0-9]*)",
+                      str(text), re.IGNORECASE)
     return match.group(1) if match else None
 
 
@@ -676,12 +695,12 @@ def _nvd_get(url: str, params: Dict[str, Any], keys: Optional[ApiKeys]) -> Dict[
         limiter.wait()
         resp = _http_get(url, params=params, headers=headers, timeout=30)
         # NVD signals rate limiting with 403 (not 429). On shared hosting other apps on the same IP count too.
-        if resp.status_code != 403 or attempt:
+        if resp.status_code not in (403, 429) or attempt:
             break
         time.sleep(6)
     if resp.status_code == 404:
         data: Dict[str, Any] = {"vulnerabilities": [], "products": [], "totalResults": 0}
-    elif resp.status_code == 403:
+    elif resp.status_code in (403, 429):
         raise SourceError("NVD rate limit reached. Wait about 30 seconds and retry"
                           + ("" if nvd_key else f", or add a free NVD API key ({KEY_SIGNUP_URLS['nvd']})"))
     elif resp.status_code != 200:
@@ -2206,6 +2225,11 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
              if len(not_affected) > not_affected_limit else None)) if v},
         "nvd_candidates_checked": len(seen),
         "nvd_candidates_total": candidates_total,
+        **({"no_candidates_note": (f"NVD has no CVEs recorded for {', '.join(f'{v}:{p}' for v, p in products)} "
+                                   f"{version}. Very recent advisories can take days to reach NVD, so check the "
+                                   "vendor's security advisories. If you expected older CVEs, the name may map to a "
+                                   "different product: retry with the vendor and product name, or use osint_cve_search.")}
+           if not candidates_total else {}),
         "results_truncated": truncated,
         "ruled_out_count": len(not_affected),
         "ruled_out_examples": [{"cve_id": v["cve_id"], "affected_ranges": v.get("affected_ranges")}

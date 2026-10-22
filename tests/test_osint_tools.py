@@ -699,3 +699,35 @@ def test_distro_check_gives_the_package_update_and_unfixed_cves(monkeypatch):
     assert r["update_package_to_at_least"]["fixes"] == "1 of 2 CVEs still open in this package"
     assert r["no_fix_released_yet"] == ["CVE-2016-20012"]
     assert r["open_in_package_shown"].startswith("showing 1 of 2")
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("14.1-66.68", "14.1-66.68"),            # NetScaler build
+    ("10.2.7-h1", "10.2.7-h1"),              # PAN-OS hotfix
+    ("1.0.0-rc1", "1.0.0-rc1"),
+    ("1.18.0-1ubuntu1", "1.18.0"),           # distro revision is dropped
+    ("9.2p1-2+deb12u3", "9.2p1"),
+])
+def test_extract_version_keeps_builds_but_not_distro_revisions(text, expected):
+    assert t.extract_version(text) == expected
+
+
+def test_recent_threat_products_map_to_the_right_cpe():
+    # Real misses in a recent-threats test: Next.js moved from zeit to vercel in NVD, "express" found a Check Point
+    # product, and "Citrix NetScaler" found nothing.
+    assert t.resolve_cpe_alias("Next.js") == ("*", "next.js")
+    assert t.resolve_cpe_alias("Express") == ("openjsf", "express")
+    assert t.resolve_cpe_alias("Citrix NetScaler") == ("citrix", "netscaler_application_delivery_controller")
+    assert t.compare_versions("14.1-66.68", "14.1-73.41") == -1
+
+
+def test_nvd_429_is_retried_then_explained(monkeypatch):
+    class Resp:
+        status_code, headers = 429, {}
+    calls = []
+    monkeypatch.setattr(t, "_http_get", lambda *a, **k: calls.append(1) or Resp())
+    monkeypatch.setattr(t.time, "sleep", lambda s: None)
+    monkeypatch.setattr(t._RateLimiter, "wait", lambda self: None)
+    with pytest.raises(t.SourceError, match="rate limit"):
+        t._nvd_get(t.NVD_CVE_URL, {"cveId": "CVE-2099-0429"}, None)
+    assert len(calls) == 2
