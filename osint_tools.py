@@ -865,7 +865,17 @@ def _kev_search_terms(software: str) -> List[set]:
 def kev_matches_software(vuln: Dict[str, Any], software: str) -> bool:
     # Whole-word matching, so "log4j" matches CISA's "Log4j2" but "apache httpd" doesn't match "Apache Struts".
     text = f"{vuln.get('vendorProject', '')} {vuln.get('product', '')}"
-    return any(mentions_whole_words(text, " ".join(sorted(term))) for term in _kev_search_terms(software))
+    if any(mentions_whole_words(text, " ".join(sorted(term))) for term in _kev_search_terms(software)):
+        return True
+    # Some KEV entries name only the vendor as the product (CVE-2021-40438 is "Apache" / "Apache"). For known
+    # products, accept the vulnerability name instead, but only when the vendor also matches.
+    alias = resolve_cpe_alias(software)
+    if not alias or alias[0] == "*":
+        return False
+    vendor, product = alias
+    return (mentions_whole_words(str(vuln.get("vendorProject", "")), vendor)
+            and mentions_whole_words(str(vuln.get("vulnerabilityName", "")),
+                                     f"{vendor} {product.replace('_', ' ')}"))
 
 
 def kev_lookup_many(cve_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
@@ -1188,6 +1198,7 @@ def osint_distro_patch_check(package: str, package_version: str, distro: str, re
         return {"tool": "distro_patch_check", "error": str(exc)}
 
     open_cves: Dict[str, Dict[str, Any]] = {}
+    open_fix: Dict[str, Optional[str]] = {}  # CVE -> package version that fixes it, for CVEs still open
     fixed: Dict[str, Optional[str]] = {}
     for record in data["records"]:
         status = _package_status(version, record)
@@ -1198,6 +1209,7 @@ def osint_distro_patch_check(package: str, package_version: str, distro: str, re
             if status["fixed_in"] and record.get("availability"):
                 entry["availability"] = record["availability"]
             open_cves[cve] = entry
+            open_fix[cve] = status["fixed_in"]
             fixed.pop(cve, None)
         elif cve not in open_cves:
             fixed[cve] = status["fixed_in"]
@@ -1229,8 +1241,26 @@ def osint_distro_patch_check(package: str, package_version: str, distro: str, re
     vulns = sorted(open_cves.values(), key=lambda v: v["cve_id"], reverse=True)
     _enrich_with_exploit_intel(vulns)
     vulns.sort(key=lambda v: (bool(v.get("in_cisa_kev")), (v.get("epss") or {}).get("epss") or 0.0), reverse=True)
+    fixes = [f for f in (open_fix.get(v["cve_id"]) for v in vulns) if f]
+    if fixes:
+        target = fixes[0]
+        for fix in fixes[1:]:
+            if compare_dpkg_versions(fix, target) > 0:
+                target = fix
+        covered = sum(1 for v in vulns if open_fix.get(v["cve_id"]))
+        result["update_package_to_at_least"] = {
+            "version": target,
+            "text": f"{package} {target} or later",
+            "fixes": f"{covered} of {len(vulns)} CVEs still open in this package",
+        }
+        # Ubuntu marks each fix "No subscription required" or, for ESM fixes, something like "Available with Ubuntu Pro".
+        if any(v.get("availability") and "no subscription" not in str(v["availability"]).lower() for v in vulns):
+            result["update_package_to_at_least"]["note"] = "Some of these fixes need an Ubuntu Pro subscription."
+    result["no_fix_released_yet"] = [v["cve_id"] for v in vulns if not open_fix.get(v["cve_id"])]
     result["open_in_package_count"] = len(vulns)
     result["open_in_package"] = vulns[:result_limit]
+    if len(vulns) > result_limit:
+        result["open_in_package_shown"] = f"showing {result_limit} of {len(vulns)}, most exploited first"
     result["note"] = (f"From {name}'s own security data via OSV.dev, which accounts for fixes {name} backports "
                       "without changing the upstream version. FIXED_IN_PACKAGE overrides an NVD version match. "
                       "NOT_LISTED means the distro's data doesn't cover that CVE for this package.")
@@ -1381,9 +1411,9 @@ def _internetdb_host(ip_address: str) -> Dict[str, Any]:
         "hostnames": [_clean_banner(str(h), 253) for h in data.get("hostnames") or []],
         "tags": tags,
         "discovered_software": software,
-        "note": ("Free InternetDB data: open ports, software (from CPEs) and Shodan's inferred CVEs only. There are "
-                 "no banners, organisation or OS details, so services and distro packages can't be checked further. "
-                 "Add SHODAN_API_KEY for full results."),
+        "note": ("Free InternetDB data: open ports, software and operating system (from CPEs) and Shodan's inferred "
+                 "CVEs only. There are no banners or organisation details, so services and distro packages can't be "
+                 "checked further. Add SHODAN_API_KEY for full results."),
     }
     if systems:
         result["operating_system"] = ", ".join(dict.fromkeys(systems))
@@ -1410,7 +1440,7 @@ def _internetdb_host(ip_address: str) -> Dict[str, Any]:
 
 def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> Dict[str, Any]:
     """Look up a public IP (or a domain's primary IP) in Shodan's host database. Without a key, falls back to
-    Shodan's free InternetDB (ports, software and CVEs, but no banners)."""
+    Shodan's free InternetDB (ports, software, OS and CVEs, but no banners)."""
     target = (target or "").strip()
     domain_info = None
     ok, err = validate_public_ip(target)
@@ -2167,6 +2197,13 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
         "affected_cves": affected[:result_limit],
         "needs_review_count": len(unanalyzed),
         "needs_review_cves": unanalyzed[: max(3, result_limit // 2)],
+        "lists_shortened": {k: v for k, v in (
+            ("affected_cves", f"showing {min(len(affected), result_limit)} of {len(affected)}"
+             if len(affected) > result_limit else None),
+            ("needs_review_cves", f"showing {max(3, result_limit // 2)} of {len(unanalyzed)}"
+             if len(unanalyzed) > max(3, result_limit // 2) else None),
+            ("ruled_out_examples", f"showing {not_affected_limit} of {len(not_affected)}"
+             if len(not_affected) > not_affected_limit else None)) if v},
         "nvd_candidates_checked": len(seen),
         "nvd_candidates_total": candidates_total,
         "results_truncated": truncated,

@@ -159,15 +159,16 @@ Rules:
 - EPSS scores are included in tool results where available; quote them for the CVEs you discuss, using the "percent" value as written.
 - Give each AFFECTED CVE's patch_status. "NVD lists no fixed version" does not mean no patch exists: say to check the vendor advisory, and never write "no patch available" unless a source says so.
 - CVEs with recently_added_to_kev were added to CISA KEV in the last 30 days: call them out as newly exploited, with days_in_kev.
+- Counts such as affected_count and open_in_package_count cover every CVE, but lists can be shortened (lists_shortened, open_in_package_shown). Say how many are listed out of the total instead of implying the list is complete.
 - Call tools only with real names from the evidence (e.g. "Dahua Rtsp Server", "nginx"); never placeholders like "all" or "unknown".
 - Exposure is a finding in itself. Internet-facing cameras/DVRs/NVRs, IoT devices, remote-admin or management interfaces (RDP, VNC, Telnet, SSH, SMB, databases, vendor protocols such as Dahua 37777/Hikvision 8000) and login pages raise risk even with a clean reputation and no version-confirmed CVE. Rate overall risk on exposure plus exploit history, not only on confirmed CVEs.
 - A clean VirusTotal/AbuseIPDB result only means the IP has not been reported as a source of attacks; it says nothing about whether the device is vulnerable.
 - Banner versions can be misleading because Linux distributions backport fixes. When the distro package version is known (Shodan's distro_packages), run osint_distro_patch_check with the version check's affected_cve_ids. Otherwise flag the backport caveat.
-- Distro data overrides an NVD version match: a CVE osint_distro_patch_check reports as FIXED_IN_PACKAGE goes under Ruled Out ("fixed by the distro backport"), never Confirmed. STILL_AFFECTS_PACKAGE is confirmed for that package; quote its package_fix. NOT_LISTED means the distro's data doesn't cover it: keep the NVD verdict and say the distro status is unknown.
+- Distro data overrides an NVD version match: a CVE osint_distro_patch_check reports as FIXED_IN_PACKAGE goes under Ruled Out ("fixed by the distro backport"), never Confirmed. STILL_AFFECTS_PACKAGE is confirmed for that package; quote its package_fix. For the package fix, recommend update_package_to_at_least, and list no_fix_released_yet as CVEs the distro hasn't fixed. NOT_LISTED means the distro's data doesn't cover it: keep the NVD verdict and say the distro status is unknown.
 - Shared hosting/CDN: hostnames on an IP may belong to unrelated sites.
 - A single VirusTotal engine detection is often a false positive; weigh it accordingly.
 - If a tool fails or a key is missing, note the gap in Limitations instead of guessing. Never describe the target as clean on a source that didn't run.
-- Shodan results with data_source "Shodan InternetDB" came from the free keyless database: they have no banners, organisation or OS, so say service details weren't checked beyond its software list.
+- Shodan results with data_source "Shodan InternetDB" came from the free keyless database: they have no banners or organisation details, so say service details weren't checked beyond its software and OS list.
 - osint_ip_owner shows who the network is registered to; for cloud and hosting providers that's the provider, not necessarily who runs the service.
 - Spamhaus DROP listing means the whole network is hijacked or criminal: report it as HIGH. Not being listed is weak evidence and never proves an IP is clean. GreyNoise RIOT means a known business service (e.g. public DNS), and "noise" means the IP scans the internet; neither says whether the host is vulnerable. Credit Spamhaus when you cite DROP.
 - Subdomains from certificate logs only show names that had TLS certificates; they may not exist any more. Don't report them as exposures without a lookup that confirms them.
@@ -601,6 +602,15 @@ def _is_target_product(name: str, result: AgentResult) -> bool:
     return any(f and (wanted == f or wanted == f.split(" ")[0]) for f in found)
 
 
+def _has_key(obj: Any, keys: tuple) -> bool:
+    """Does any dict nested in ``obj`` have one of ``keys``?"""
+    if isinstance(obj, dict):
+        return any(k in obj for k in keys) or any(_has_key(v, keys) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_has_key(v, keys) for v in obj)
+    return False
+
+
 def _fmt_epss(entry: Dict[str, Any]) -> str:
     epss = (entry.get("epss") or {}).get("epss")
     if epss is None:
@@ -725,6 +735,13 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
                     + (f". Fixed by backport: {', '.join(r['fixed_by_backport'][:8])}" if fixed else ""))
             else:
                 add(label, f"{r.get('open_in_package_count', 0)} CVEs still affect this package per {r['distro']}")
+            update = r.get("update_package_to_at_least")
+            if isinstance(update, dict) and update.get("text"):
+                add(f"Update the {r['package']} package to", f"{update['text']} (fixes {update.get('fixes')})"
+                    + (f". {update['note']}" if update.get("note") else ""))
+            if r.get("no_fix_released_yet"):
+                add(f"{r['distro']} has no fix yet for", ", ".join(r["no_fix_released_yet"][:8])
+                    + (f" and {len(r['no_fix_released_yet']) - 8} more" if len(r["no_fix_released_yet"]) > 8 else ""))
             for v in r.get("open_in_package", []) or []:
                 if v.get("in_cisa_kev"):
                     kev_lines.setdefault(v["cve_id"], f"{v['cve_id']}{_fmt_epss(v)}")
@@ -745,7 +762,12 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
 
     confirmed = [kev_lines.get(c, c) for c in summary["cisa_kev_confirmed"]]
     related = [kev_lines.get(c, c) for c in summary["cisa_kev_related"]]
-    add("CISA KEV: confirmed for this target", ", ".join(confirmed) or "none")
+    backport_unchecked = not has_distro_check and any(
+        rec.result.get("success") and rec.result.get("tool") == "shodan"
+        and (rec.result.get("backport_note") or rec.result.get("distro_packages")) for rec in result.tool_calls)
+    add("CISA KEV: confirmed for this target", ", ".join(confirmed) + (
+        " (matched on the upstream version; the host's distro may have backported the fix, which wasn't checked)"
+        if backport_unchecked else "") if confirmed else "none")
     add("CISA KEV: related (product family or vendor)", ", ".join(related) or "none")
     recent = [c for c in summary["cisa_kev_confirmed"] + summary["cisa_kev_related"] if c in kev_recent]
     if recent:
@@ -772,6 +794,11 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
             ran[tool] = f"Certificate logs ({rec.result.get('source')})"
         else:
             ran[tool] = SOURCE_LABELS.get(tool, tool)
+    if any(_has_key(rec.result, ("in_cisa_kev", "cisa_kev_product_matches", "cves_in_kev"))
+           for rec in result.tool_calls if rec.status == "success"):
+        ran.setdefault("kev", "CISA KEV")
+    if any(_has_key(rec.result, ("epss",)) for rec in result.tool_calls if rec.status == "success"):
+        ran.setdefault("epss", "FIRST EPSS")
     add("Sources checked", ", ".join(dict.fromkeys(ran.values())) or "none")
     if result.target.type in ("ip", "domain"):
         missing = []

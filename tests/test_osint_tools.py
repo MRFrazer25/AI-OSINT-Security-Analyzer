@@ -679,3 +679,23 @@ def test_server_key_quota_zero_limit_and_release():
     quota.release("a")
     assert quota.acquire("b", total_limit=1, client_limit=1) == 0
     quota.release("nobody")  # no-op
+
+
+def test_kev_entries_naming_only_the_vendor_match_by_vulnerability_name():
+    # Real gap: CISA files CVE-2021-40438 as vendor "Apache", product "Apache".
+    entry = {"cveID": "CVE-2021-40438", "vendorProject": "Apache", "product": "Apache",
+             "vulnerabilityName": "Apache HTTP Server-Side Request Forgery (SSRF)"}
+    assert t.kev_matches_software(entry, "apache http server")
+    # The vendor must match too, so a PHP bug in another vendor's product isn't a PHP match.
+    zimbra = {"vendorProject": "Synacor", "product": "Zimbra", "vulnerabilityName": "Synacor Zimbra PHP Remote File Inclusion"}
+    assert not t.kev_matches_software(zimbra, "php")
+    assert not t.kev_matches_software(entry, "apache tomcat")
+
+
+def test_distro_check_gives_the_package_update_and_unfixed_cves(monkeypatch):
+    _fake_osv(monkeypatch, JAMMY)
+    r = t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu", result_limit=1)
+    assert r["update_package_to_at_least"]["text"] == "openssh 1:8.9p1-3ubuntu0.10 or later"
+    assert r["update_package_to_at_least"]["fixes"] == "1 of 2 CVEs still open in this package"
+    assert r["no_fix_released_yet"] == ["CVE-2016-20012"]
+    assert r["open_in_package_shown"].startswith("showing 1 of 2")

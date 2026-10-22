@@ -307,7 +307,7 @@ def test_key_facts_are_built_from_tool_data_without_the_model():
     assert facts["VirusTotal"].startswith("0 malicious, 0 suspicious of 91")
     assert facts["CISA KEV: related (product family or vendor)"] == "CVE-2021-33044 (EPSS 99.99%)"
     assert facts["CISA KEV: confirmed for this target"] == "none"
-    assert facts["Sources checked"] == "Shodan, VirusTotal"
+    assert facts["Sources checked"] == "Shodan, VirusTotal, CISA KEV, FIRST EPSS"
     assert facts["Not checked (no claim can be made from these)"] == "AbuseIPDB (no API key)"
     assert "Sources that failed or were skipped" not in facts
 
@@ -410,3 +410,20 @@ def test_distro_backport_overrides_an_nvd_version_match():
     facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
     assert facts["Ubuntu 22.04 openssh 8.9p1-3ubuntu0.10 (distro data via OSV)"].startswith(
         "of 2 CVEs checked: 1 fixed by the distro backport, 1 still affect this package")
+
+
+def test_confirmed_kev_says_when_a_backport_could_not_be_checked():
+    shodan = ("osint_shodan_search", {"tool": "shodan", "success": True, "data_source": "Shodan InternetDB",
+                                      "operating_system": "canonical ubuntu linux", "backport_note": "backports",
+                                      "discovered_software": [{"name": "apache http server", "version": "2.4.7"}]})
+    version = ("osint_version_specific_vulnerability_check", {
+        "tool": "version_check", "success": True, "software": "apache http server", "version": "2.4.7",
+        "affected_cves": [{"cve_id": "CVE-2021-40438", "severity": "CRITICAL", "in_cisa_kev": True,
+                           "epss": {"epss": 0.9}}],
+        "affected_in_cisa_kev": ["CVE-2021-40438"]})
+    result = ai.AgentResult(target=ai.classify_target("45.33.32.156"), report="", complexity="Quick Scan", model="m",
+                             tool_calls=[ai.ToolCallRecord(n, {}, 1, "t", 1, r) for n, r in (shodan, version)])
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert "may have backported the fix, which wasn't checked" in facts["CISA KEV: confirmed for this target"]
+    assert "backports fixes" in facts["Operating system (Shodan InternetDB)"]
+    assert facts["Sources checked"].endswith("CISA KEV, FIRST EPSS")
