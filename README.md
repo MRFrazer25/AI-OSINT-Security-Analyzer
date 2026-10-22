@@ -39,7 +39,17 @@ Private, loopback, link-local, CGNAT and other non-public addresses are rejected
 | [NVD](https://nvd.nist.gov/) | CVE details and affected versions | Optional (raises rate limit) | [nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key) |
 | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), [FIRST EPSS](https://www.first.org/epss/) | Exploitation status / probability | Not needed | n/a |
 
-All of these offer free tiers. Check each provider for its current limits.
+All of these offer free tiers. Check each provider for its current limits. Free tiers that matter here:
+
+* Cohere trial keys are for evaluation, limited to 1,000 calls a month, and Cohere may use trial inputs and outputs, de-identified, for research. Use a production key for real or sensitive work.
+* VirusTotal's free public API allows 4 lookups a minute and 500 a day, and [must not be used in commercial products or services](https://docs.virustotal.com/reference/public-vs-premium-api).
+* AbuseIPDB's [free plans](https://www.abuseipdb.com/legal) are for non-commercial personal projects, and its data must not be republished.
+
+If you deploy your own copy, keep `SHARE_SERVER_KEYS` off (the default) so visitors can't use your keys.
+
+This product uses data from the NVD API but is not endorsed or certified by the NVD.
+
+This is an independent project, not affiliated with, endorsed by or sponsored by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA or FIRST. Their names are used only to say which services it works with.
 
 ## Running locally
 
@@ -110,7 +120,7 @@ These apply only when an analysis uses a server-provided Cohere, Shodan, VirusTo
 * **Key redaction:** error messages are scrubbed of API key values.
 * **No telemetry:** Streamlit usage stats are disabled, stack traces are hidden from visitors, and analysed targets are not written to server logs.
 
-**What leaves your machine:** the target and the gathered evidence are sent to Cohere to produce the report. The target is also looked up at whichever sources apply (Shodan, VirusTotal, AbuseIPDB, NVD, CISA, FIRST). Each lookup is subject to that provider's privacy policy, so don't submit targets you need to keep confidential.
+**What leaves your machine:** the target and the gathered evidence are sent to Cohere to produce the report. The target is also looked up at whichever sources apply (Shodan, VirusTotal, AbuseIPDB, NVD, CISA, FIRST). Each lookup is subject to that provider's privacy policy, and each provider also sees the requesting IP address: Shodan, NIST, CISA and FIRST say they log details such as the IP and time of each request. With a Cohere trial key, Cohere may use the target and evidence, de-identified, for research. Don't submit targets you need to keep confidential.
 
 Exported reports can contain sensitive findings. Handle them accordingly.
 

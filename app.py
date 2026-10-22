@@ -152,7 +152,7 @@ Include a version for software. Without one, results are generic.
 **How it works**
 1. The agent plans which tools apply to your target.
 2. It gathers evidence from the sources below.
-3. Vulnerabilities are matched to exact versions using NVD's affected-version data, then ranked by CISA KEV (exploited in the wild), CVSS and EPSS.
+3. Vulnerabilities are matched to exact versions using NVD's affected-version data, then ranked by CISA KEV (exploited in the wild), EPSS and CVSS. Each one shows the fix NVD lists.
 4. It writes a report that cites each source.
 """
     )
@@ -167,6 +167,8 @@ Include a version for software. Without one, results are generic.
 - [FIRST EPSS](https://www.first.org/epss/): exploit probability
 """
     )
+    st.caption("This product uses data from the NVD API but is not endorsed or certified by the NVD. "
+               "Not affiliated with or endorsed by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA or FIRST.")
 
 # --- API keys ---------------------------------------------------------------
 server = server_keys()

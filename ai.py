@@ -14,8 +14,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cohere
 
-from osint_tools import (KEY_SIGNUP_URLS, TOOL_FUNCTIONS, ApiKeys, Target, classify_target,
-                         normalize_software_name, redact)
+from osint_tools import (KEV_RECENT_DAYS, KEY_SIGNUP_URLS, TOOL_FUNCTIONS, ApiKeys, Target, classify_target,
+                         epss_percent, normalize_software_name, redact)
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,9 @@ Rules:
 - Write version ranges in words ("before 1.21.0", "from 2.4.0 through 2.4.55"), not with < or > symbols.
 - CDN/edge IPs (Shodan cdn_note): the open ports and services belong to the CDN, are shared by many customers and can't be closed by the site owner. Don't report them as the target's exposure or recommend closing them.
 - If a product-name search (version check or CVE search) finds nothing, retry osint_cve_search once with just the vendor name (e.g. "Dahua"), then treat those results as vendor history, not confirmed findings.
-- EPSS scores are included in tool results where available; quote them for the CVEs you discuss.
+- EPSS scores are included in tool results where available; quote them for the CVEs you discuss, using the "percent" value as written.
+- Give each AFFECTED CVE's patch_status. "NVD lists no fixed version" does not mean no patch exists: say to check the vendor advisory, and never write "no patch available" unless a source says so.
+- CVEs with recently_added_to_kev were added to CISA KEV in the last 30 days: call them out as newly exploited, with days_in_kev.
 - Call tools only with real names from the evidence (e.g. "Dahua Rtsp Server", "nginx"); never placeholders like "all" or "unknown".
 - Exposure is a finding in itself. Internet-facing cameras/DVRs/NVRs, IoT devices, remote-admin or management interfaces (RDP, VNC, Telnet, SSH, SMB, databases, vendor protocols such as Dahua 37777/Hikvision 8000) and login pages raise risk even with a clean reputation and no version-confirmed CVE. Rate overall risk on exposure plus exploit history, not only on confirmed CVEs.
 - A clean VirusTotal/AbuseIPDB result only means the IP has not been reported as a source of attacks; it says nothing about whether the device is vulnerable.
@@ -405,7 +407,8 @@ class _ToolRunner:
         except TypeError as exc:
             result = {"tool": name, "error": f"Invalid arguments for {name}: {exc}"}
         except Exception as exc:  # tools should not raise, but never let one crash the run
-            logger.exception("Tool %s failed", name)
+            # No traceback: exception text can carry request URLs with keys in them (Shodan puts its key there).
+            logger.error("Tool %s failed: %s", name, type(exc).__name__)
             result = {"tool": name, "error": f"{name} failed: {redact(str(exc), self.keys)[:300]}"}
         if not result.get("error"):
             self._cache[cache_key] = result
@@ -547,8 +550,7 @@ def _fmt_epss(entry: Dict[str, Any]) -> str:
     epss = (entry.get("epss") or {}).get("epss")
     if epss is None:
         return ""
-    # 0.99999 would round to "100.00%", which overstates a probability; cap the display just below 100.
-    return f" (EPSS {min(epss * 100, 99.99) if epss < 1 else 100:.2f}%)"
+    return f" (EPSS {epss_percent(epss)})"
 
 
 def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
@@ -559,6 +561,11 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
     facts: List[Dict[str, str]] = []
     seen_tools = set()
     kev_lines: Dict[str, str] = {}
+    kev_recent: Dict[str, int] = {}  # CVE -> days since it was added to KEV, for recently added ones
+
+    def note_recent(entry: Dict[str, Any]) -> None:
+        if entry.get("recently_added_to_kev") and entry.get("cve_id"):
+            kev_recent[entry["cve_id"]] = entry["days_in_kev"]
     summary = build_report_data(result, include_facts=False)["summary"]
     # Only show CVE details that concern the target (not e.g. a Chrome CVE the model looked up for 8.8.8.8).
     relevant_cves = set(summary["cisa_kev_confirmed"]) | set(summary["cisa_kev_related"])
@@ -595,6 +602,7 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
             for match in (r.get("cisa_kev_product_matches") or {}).values():
                 for e in match.get("entries", []):
                     kev_lines.setdefault(e["cve_id"], f"{e['cve_id']}{_fmt_epss(e)}")
+                    note_recent(e)
         elif tool == "virustotal":
             add("VirusTotal", f"{r['malicious']} malicious, {r['suspicious']} suspicious of "
                               f"{r['total_engines']} engines ({r['threat_level']})")
@@ -606,23 +614,38 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
             add(f"{r['software']} {r['version']} (NVD)",
                 f"{r['security_status']}: {r['affected_count']} affected, {r['needs_review_count']} need review, "
                 f"{r['ruled_out_count']} ruled out" + (f". Top: {top}" if top else ""))
+            patch = r.get("patch_status_summary")
+            if isinstance(patch, dict) and r.get("affected_count"):
+                no_fix = r.get("no_fix_listed_cves") or []
+                add(f"Patch status: {r['software']} {r['version']}",
+                    f"{patch.get('fix_listed', 0)} of {r['affected_count']} affected CVEs have a fixed version in NVD"
+                    + (f"; {len(no_fix)} list no fixed version, so upgrading may not cover them (check the vendor "
+                       f"advisory): {', '.join(no_fix[:5])}" if no_fix else ""))
             upgrade = r.get("upgrade_to_at_least")
             if isinstance(upgrade, dict) and upgrade.get("text"):
                 add(f"Upgrade {r['software']} to", upgrade["text"] + (f" ({upgrade['note']})" if upgrade.get("note") else ""))
         elif tool == "nvd" and r.get("cve_id") in relevant_cves:
             add(f"{r['cve_id']} (NVD)", f"{r['severity']}, CVSS {r.get('cvss_score')} (v{r.get('cvss_version')})"
                 + _fmt_epss(r) + (", in CISA KEV" if r.get("in_cisa_kev") else ""))
+            if isinstance(r.get("cisa_kev"), dict):
+                note_recent({"cve_id": r["cve_id"], **r["cisa_kev"]})
         for v in r.get("affected_cves", []) or []:
             if v.get("in_cisa_kev"):
                 kev_lines[v["cve_id"]] = f"{v['cve_id']}{_fmt_epss(v)}"
+                note_recent(v)
         for e in (r.get("cve_results") or {}).values():
             if isinstance(e, dict):
                 kev_lines.setdefault(e["cve_id"], f"{e['cve_id']}{_fmt_epss(e)}")
+                note_recent(e)
 
     confirmed = [kev_lines.get(c, c) for c in summary["cisa_kev_confirmed"]]
     related = [kev_lines.get(c, c) for c in summary["cisa_kev_related"]]
     add("CISA KEV: confirmed for this target", ", ".join(confirmed) or "none")
     add("CISA KEV: related (product family or vendor)", ", ".join(related) or "none")
+    recent = [c for c in summary["cisa_kev_confirmed"] + summary["cisa_kev_related"] if c in kev_recent]
+    if recent:
+        add(f"Newly exploited (added to CISA KEV in the last {KEV_RECENT_DAYS} days)",
+            ", ".join(f"{c} ({kev_recent[c]} days ago)" for c in recent))
 
     failed = sorted({rec.result.get("tool") or rec.tool for rec in result.tool_calls if rec.status == "error"})
     if failed:

@@ -527,9 +527,23 @@ def assess_cve_for_version(cve: Dict[str, Any], vendor: str, product: str, versi
                 verdict["fixed_in"] = match["versionEndExcluding"]
             elif match.get("versionEndIncluding"):
                 verdict["fixed_after"] = match["versionEndIncluding"]
+            verdict["patch_status"] = patch_status(verdict)
             return verdict
     return {"status": "NOT_AFFECTED", "reason": "Version is outside every affected range listed by NVD",
             "affected_ranges": [_describe_range(m) for m in relevant_matches[:3]]}
+
+
+def patch_status(verdict: Dict[str, Any]) -> str:
+    """What NVD lists as the fix for an affected CVE.
+
+    Worded as NVD's listing on purpose: vendors often ship a fix before NVD records one, so a missing fixed
+    version must not read as "no patch exists".
+    """
+    if verdict.get("fixed_in"):
+        return f"fixed in {verdict['fixed_in']} or later (per NVD)"
+    if verdict.get("fixed_after"):
+        return f"fixed in versions later than {verdict['fixed_after']} (per NVD)"
+    return "NVD lists no fixed version; check the vendor advisory"
 
 
 def minimum_safe_version(affected: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -738,6 +752,7 @@ def summarize_nvd_cve(cve: Dict[str, Any], description_limit: int = 600, referen
             "action_due": cve.get("cisaActionDue"),
             "required_action": cve.get("cisaRequiredAction"),
             "vulnerability_name": cve.get("cisaVulnerabilityName"),
+            **kev_age(cve.get("cisaExploitAdd")),
         }
     return summary
 
@@ -779,6 +794,19 @@ def _load_kev_catalog() -> Dict[str, Any]:
     return catalog
 
 
+KEV_RECENT_DAYS = 30
+
+
+def kev_age(date_added: Any) -> Dict[str, Any]:
+    """Days since CISA added a CVE to KEV, and whether that is recent enough to call it newly exploited."""
+    try:
+        added = datetime.strptime(str(date_added or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return {}
+    days = (datetime.now(timezone.utc).date() - added).days
+    return {"days_in_kev": days, "recently_added_to_kev": 0 <= days <= KEV_RECENT_DAYS}
+
+
 def _kev_entry_summary(vuln: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "cve_id": vuln.get("cveID"),
@@ -786,6 +814,7 @@ def _kev_entry_summary(vuln: Dict[str, Any]) -> Dict[str, Any]:
         "product": vuln.get("product"),
         "vulnerability_name": vuln.get("vulnerabilityName"),
         "date_added": vuln.get("dateAdded"),
+        **kev_age(vuln.get("dateAdded")),
         "short_description": vuln.get("shortDescription"),
         "required_action": vuln.get("requiredAction"),
         "due_date": vuln.get("dueDate"),
@@ -823,10 +852,16 @@ def kev_lookup_many(cve_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     return {c.upper(): _kev_entry_summary(by_cve[c.upper()]) for c in cve_ids if c and c.upper() in by_cve}
 
 
-def epss_lookup_many(cve_ids: Iterable[str]) -> Dict[str, Dict[str, float]]:
+def epss_percent(epss: float) -> str:
+    """EPSS as a display percentage. 0.99999 would round to "100.00%", which overstates a probability, so the
+    display is capped just below 100. Results carry this string so the model quotes the same value as the key facts."""
+    return f"{min(epss * 100, 99.99) if epss < 1 else 100:.2f}%"
+
+
+def epss_lookup_many(cve_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     """FIRST EPSS exploitation-probability scores (best effort; missing on failure)."""
     ids = sorted({c.upper() for c in cve_ids if c and is_valid_cve(c)})
-    result: Dict[str, Dict[str, float]] = {}
+    result: Dict[str, Dict[str, Any]] = {}
     missing = []
     for cve_id in ids:
         cached = _epss_cache.get(cve_id)
@@ -841,6 +876,7 @@ def epss_lookup_many(cve_ids: Iterable[str]) -> Dict[str, Dict[str, float]]:
             resp = _http_get(EPSS_URL, params={"cve": ",".join(batch)}, retries=1)
             rows = resp.json().get("data", []) if resp.status_code == 200 else None
             found = {r["cve"].upper(): {"epss": round(float(r["epss"]), 5),
+                                        "percent": epss_percent(float(r["epss"])),
                                         "percentile": round(float(r["percentile"]), 4)}
                      for r in rows or [] if r.get("cve")}
         except (SourceError, ValueError, KeyError, TypeError, AttributeError):
@@ -863,8 +899,13 @@ def _enrich_with_exploit_intel(vulns: List[Dict[str, Any]]) -> None:
         if cve_id in kev:
             v["in_cisa_kev"] = True
             v["kev_known_ransomware_use"] = kev[cve_id]["known_ransomware_use"]
+            v["kev_date_added"] = kev[cve_id]["date_added"]
         else:
             v.setdefault("in_cisa_kev", bool(v.get("cisa_kev")))
+            if v.get("cisa_kev"):
+                v["kev_date_added"] = v["cisa_kev"].get("date_added")
+        if v.get("kev_date_added"):
+            v.update(kev_age(v["kev_date_added"]))
         if cve_id in epss:
             v["epss"] = epss[cve_id]
 
@@ -942,6 +983,7 @@ def kev_matches_for_software(names: Iterable[str], limit: int = 10) -> Dict[str,
                 "count": len(hits),
                 "entries": [{"cve_id": v.get("cveID"), "product": f"{v.get('vendorProject')} {v.get('product')}",
                              "name": v.get("vulnerabilityName"), "date_added": v.get("dateAdded"),
+                             **kev_age(v.get("dateAdded")),
                              "known_ransomware_use": v.get("knownRansomwareCampaignUse")}
                             for v in hits[:limit]],
             }
@@ -1425,8 +1467,10 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
     affected.sort(key=sort_key, reverse=True)
     unanalyzed.sort(key=sort_key, reverse=True)
     _enrich_with_exploit_intel(affected + unanalyzed)
-    # Exploited-in-the-wild first, then by CVSS.
-    affected.sort(key=lambda v: (bool(v.get("in_cisa_kev")), v.get("cvss_score") or 0.0), reverse=True)
+    # Exploited in the wild first, then most likely to be exploited (EPSS), then by CVSS.
+    affected.sort(key=lambda v: (bool(v.get("in_cisa_kev")), (v.get("epss") or {}).get("epss") or 0.0,
+                                 v.get("cvss_score") or 0.0), reverse=True)
+    no_fix = [v["cve_id"] for v in affected if not (v.get("fixed_in") or v.get("fixed_after"))]
 
     if affected:
         status = "VULNERABLE"
@@ -1450,6 +1494,8 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
         "affected_by_severity": severity_counts,
         "affected_in_cisa_kev": [v["cve_id"] for v in affected if v.get("in_cisa_kev")],
         "upgrade_to_at_least": minimum_safe_version(affected),
+        "patch_status_summary": {"fix_listed": len(affected) - len(no_fix), "no_fix_listed": len(no_fix)},
+        "no_fix_listed_cves": no_fix,
         "affected_cves": affected[:result_limit],
         "needs_review_count": len(unanalyzed),
         "needs_review_cves": unanalyzed[: max(3, result_limit // 2)],

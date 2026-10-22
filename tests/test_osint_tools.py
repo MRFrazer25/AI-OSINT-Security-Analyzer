@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 import osint_tools as t
@@ -286,6 +288,54 @@ def test_affected_verdict_records_fix_version():
     cve = _cve({"vulnerable": True, "criteria": NGINX, "versionStartIncluding": "1.11.4",
                 "versionEndExcluding": "1.26.3"})
     assert t.assess_cve_for_version(cve, "*", "nginx", "1.20.1")["fixed_in"] == "1.26.3"
+
+
+def test_patch_status_says_what_nvd_lists_not_that_no_patch_exists():
+    assert t.patch_status({"fixed_in": "1.26.3"}) == "fixed in 1.26.3 or later (per NVD)"
+    assert t.patch_status({"fixed_after": "1.25.2"}) == "fixed in versions later than 1.25.2 (per NVD)"
+    missing = t.patch_status({})
+    assert "no fixed version" in missing and "vendor advisory" in missing and "no patch" not in missing
+
+
+def _days_ago(n):
+    return (datetime.now(timezone.utc).date() - timedelta(days=n)).isoformat()
+
+
+def test_kev_age_flags_recent_additions_only():
+    assert t.kev_age(_days_ago(12)) == {"days_in_kev": 12, "recently_added_to_kev": True}
+    assert t.kev_age(_days_ago(400))["recently_added_to_kev"] is False
+    assert t.kev_age(None) == {} and t.kev_age("not a date") == {}
+
+
+def test_epss_percent_is_capped_below_100():
+    assert t.epss_percent(0.99999) == "99.99%"
+    assert t.epss_percent(0.0043) == "0.43%"
+    assert t.epss_percent(1.0) == "100.00%"
+
+
+def test_version_check_ranks_by_kev_then_epss_and_reports_patch_status(monkeypatch):
+    def cve(cve_id, score, **match):
+        return {"cve": {"id": cve_id, "vulnStatus": "Analyzed",
+                        "metrics": {"cvssMetricV31": [{"type": "Primary", "cvssData": {"baseScore": score}}]},
+                        "configurations": [{"nodes": [{"cpeMatch": [{"vulnerable": True, "criteria": NGINX,
+                                                                     **match}]}]}]}}
+    page = {"totalResults": 3, "vulnerabilities": [
+        cve("CVE-2000-0001", 9.8, versionEndExcluding="2.0"),       # highest CVSS, low EPSS
+        cve("CVE-2000-0002", 5.0, versionStartIncluding="1.0"),     # no fix listed, high EPSS
+        cve("CVE-2000-0003", 7.5, versionEndIncluding="1.5"),       # in KEV
+    ]}
+    monkeypatch.setattr(t, "_nvd_get", lambda url, params, keys: page)
+    monkeypatch.setattr(t, "kev_lookup_many", lambda ids: {"CVE-2000-0003": {
+        "known_ransomware_use": "Unknown", "date_added": _days_ago(5)}})
+    monkeypatch.setattr(t, "epss_lookup_many", lambda ids: {
+        "CVE-2000-0001": {"epss": 0.01}, "CVE-2000-0002": {"epss": 0.9}})
+    result = t.osint_version_specific_vulnerability_check("nginx", version="1.2")
+    assert [v["cve_id"] for v in result["affected_cves"]] == ["CVE-2000-0003", "CVE-2000-0002", "CVE-2000-0001"]
+    assert result["patch_status_summary"] == {"fix_listed": 2, "no_fix_listed": 1}
+    assert result["no_fix_listed_cves"] == ["CVE-2000-0002"]
+    kev_entry = result["affected_cves"][0]
+    assert kev_entry["recently_added_to_kev"] is True and kev_entry["days_in_kev"] == 5
+    assert kev_entry["patch_status"] == "fixed in versions later than 1.5 (per NVD)"
 
 
 def test_api_error_detail_is_extracted_and_redacted():

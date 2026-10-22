@@ -329,3 +329,29 @@ def test_markdown_sanitizer_is_fast_on_hostile_input():
     start = time.perf_counter()
     ai.sanitize_report_markdown("[" * 20000 + "](" * 5000)
     assert time.perf_counter() - start < 1.0
+
+
+def test_key_facts_show_patch_status_and_newly_exploited_cves():
+    version = ("osint_version_specific_vulnerability_check", {
+        "tool": "version_check", "success": True, "software": "nginx", "version": "1.20.1",
+        "security_status": "VULNERABLE", "affected_count": 3, "needs_review_count": 0, "ruled_out_count": 1,
+        "patch_status_summary": {"fix_listed": 2, "no_fix_listed": 1}, "no_fix_listed_cves": ["CVE-2000-0002"],
+        "affected_cves": [{"cve_id": "CVE-2000-0003", "severity": "HIGH", "in_cisa_kev": True,
+                           "days_in_kev": 5, "recently_added_to_kev": True}],
+        "affected_in_cisa_kev": ["CVE-2000-0003"]})
+    result = ai.AgentResult(target=ai.classify_target("nginx 1.20.1"), report="", complexity="Quick Scan",
+                            model="m", tool_calls=[ai.ToolCallRecord(version[0], {}, 1, "t", 1, version[1])])
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    patch = facts["Patch status: nginx 1.20.1"]
+    assert patch.startswith("2 of 3 affected CVEs have a fixed version in NVD; 1 list no fixed version")
+    assert patch.endswith("CVE-2000-0002")
+    assert facts["Newly exploited (added to CISA KEV in the last 30 days)"] == "CVE-2000-0003 (5 days ago)"
+
+
+def test_no_newly_exploited_fact_without_recent_kev_entries():
+    nvd = ("osint_nvd_lookup", {"tool": "nvd", "success": True, "cve_id": "CVE-2021-44228", "severity": "CRITICAL",
+                                "in_cisa_kev": True, "cisa_kev": {"days_in_kev": 1400, "recently_added_to_kev": False}})
+    result = ai.AgentResult(target=ai.classify_target("CVE-2021-44228"), report="", complexity="Quick Scan",
+                            model="m", tool_calls=[ai.ToolCallRecord(nvd[0], {}, 1, "t", 1, nvd[1])])
+    labels = [f["label"] for f in ai.build_key_facts(result)]
+    assert not any(label.startswith("Newly exploited") for label in labels)
