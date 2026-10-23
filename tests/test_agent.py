@@ -449,3 +449,11 @@ def test_key_facts_show_package_advisories_exploits_and_sans():
     assert facts["Public exploit code (Exploit-DB)"] == "GHSA-673q-mjm6-r5xr (2 published, verified)"
     assert facts["SANS ISC (DShield)"] == "no attack reports from DShield sensors"
     assert "SANS ISC" in facts["Sources checked"] and "GitHub Advisory (OSV)" in facts["Sources checked"]
+
+
+def test_kev_is_not_reported_as_clear_before_any_kev_lookup():
+    result = ai.AgentResult(target=ai.classify_target("nginx 1.18.0"), report="", complexity="Quick Scan",
+                            model="m", tool_calls=[])
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert facts["CISA KEV: confirmed for this target"] == "not checked"
+    assert facts["CISA KEV: related (product family or vendor)"] == "not checked"

@@ -197,13 +197,14 @@ Data gaps, failed tools, and assumptions."""
 
 TARGET_PLANS = {
     "ip": ("Investigate the public IP address {value}. Shodan, VirusTotal, AbuseIPDB, the registry owner and the "
-           "Spamhaus/GreyNoise threat lists are already done (below). "
+           "Spamhaus/GreyNoise threat lists already ran (below; any skipped for a missing key say so). "
            "Next: osint_version_specific_vulnerability_check for each product with a version; use Shodan's "
            "cisa_kev_product_matches (or osint_cisa_kev_check for vendors named only in banners); "
            "osint_distro_patch_check for each of Shodan's distro_packages, with the affected CVE IDs; NVD lookups "
            "for the most serious CVEs if more detail is needed."),
     "domain": ("Investigate the domain {value}. DNS, VirusTotal, and the IP checks for the primary IP (Shodan, "
-               "AbuseIPDB, registry owner, threat lists) are already done (below). Next: "
+               "AbuseIPDB, registry owner, threat lists) already ran (below; any skipped for a missing key say "
+               "so). Next: "
                "osint_version_specific_vulnerability_check for each product with a version found by Shodan, "
                "osint_distro_patch_check for each of Shodan's distro_packages, and review Shodan's "
                "cisa_kev_product_matches. osint_subdomains lists other hostnames from certificate logs; check "
@@ -324,7 +325,7 @@ def _message_text(message: Any) -> str:
     return "\n".join(getattr(item, "text", "") for item in content if getattr(item, "text", None)).strip()
 
 
-def _run_baseline(target: Target, runner: "_ToolRunner", emit: "EventCallback") -> List[Dict[str, Any]]:
+def _run_baseline(target: Target, runner: _ToolRunner, emit: EventCallback) -> List[Dict[str, Any]]:
     """Always run the core exposure/reputation lookups in code, so coverage doesn't depend on the model.
 
     Saves a model round trip too. Results go through the same runner (quota caps, caching, records).
@@ -808,10 +809,14 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
     backport_unchecked = not has_distro_check and any(
         rec.result.get("success") and rec.result.get("tool") == "shodan"
         and (rec.result.get("backport_note") or rec.result.get("distro_packages")) for rec in result.tool_calls)
+    kev_checked = any(_has_key(rec.result, ("in_cisa_kev", "cisa_kev_product_matches", "cves_in_kev"))
+                      and not _has_key(rec.result, ("kev_unavailable",))
+                      for rec in result.tool_calls if rec.status == "success")
+    no_match = "none" if kev_checked else "not checked"
     add("CISA KEV: confirmed for this target", ", ".join(confirmed) + (
         " (matched on the upstream version; the host's distro may have backported the fix, which wasn't checked)"
-        if backport_unchecked else "") if confirmed else "none")
-    add("CISA KEV: related (product family or vendor)", ", ".join(related) or "none")
+        if backport_unchecked else "") if confirmed else no_match)
+    add("CISA KEV: related (product family or vendor)", ", ".join(related) or no_match)
     recent = [c for c in summary["cisa_kev_confirmed"] + summary["cisa_kev_related"] if c in kev_recent]
     if recent:
         add(f"Newly exploited (added to CISA KEV in the last {KEV_RECENT_DAYS} days)",
@@ -838,9 +843,7 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
             ran[tool] = f"Certificate logs ({rec.result.get('source')})"
         else:
             ran[tool] = SOURCE_LABELS.get(tool, tool)
-    if any(_has_key(rec.result, ("in_cisa_kev", "cisa_kev_product_matches", "cves_in_kev"))
-           and not _has_key(rec.result, ("kev_unavailable",))
-           for rec in result.tool_calls if rec.status == "success"):
+    if kev_checked:
         ran.setdefault("kev", "CISA KEV")
     if any(_has_key(rec.result, ("epss",)) for rec in result.tool_calls if rec.status == "success"):
         ran.setdefault("epss", "FIRST EPSS")

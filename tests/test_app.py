@@ -164,3 +164,10 @@ def test_runs_that_fail_before_any_lookup_do_not_use_the_quota(monkeypatch):
     _analyse(first)
     _analyse(second)
     assert len(calls) == 2  # the failed first run gave its slot back
+
+
+def test_optional_keys_are_not_shown_as_missing(app):
+    statuses = [m.value for m in app.markdown if "Configured" in m.value or "(required)" in m.value
+                or "(optional)" in m.value]
+    assert any("Cohere" in s and "Missing (required)" in s for s in statuses)
+    assert any("NVD" in s and "Not set (optional)" in s for s in statuses)

@@ -81,7 +81,7 @@ class ApiKeys:
     greynoise: str = ""
 
     @classmethod
-    def from_env(cls) -> "ApiKeys":
+    def from_env(cls) -> ApiKeys:
         return cls(
             cohere=os.getenv("COHERE_API_KEY", ""),
             shodan=os.getenv("SHODAN_API_KEY", ""),
@@ -91,7 +91,7 @@ class ApiKeys:
             greynoise=os.getenv("GREYNOISE_API_KEY", ""),
         )
 
-    def with_overrides(self, **overrides: str) -> "ApiKeys":
+    def with_overrides(self, **overrides: str) -> ApiKeys:
         """Return a copy where any non-empty override replaces the current value."""
         values = {k: (overrides.get(k) or "").strip() or getattr(self, k) for k in self.__dataclass_fields__}
         return ApiKeys(**values)

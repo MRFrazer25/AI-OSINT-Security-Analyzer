@@ -239,7 +239,9 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
     names = list(KEY_FIELDS)
     for start in range(0, len(names), 3):  # rows of three, so service names don't wrap mid-word
         for col, name in zip(st.columns(3), names[start:start + 3]):
-            col.markdown(f"**{key_link(name)}**  \n{'Configured' if getattr(keys_now, name) else 'Missing'}")
+            status = ("Configured" if getattr(keys_now, name)
+                      else "Missing (required)" if KEY_FIELDS[name][3] else "Not set (optional)")
+            col.markdown(f"**{key_link(name)}**  \n{status}")
 
 # --- Target input -------------------------------------------------------------
 st.subheader("Target Analysis")
