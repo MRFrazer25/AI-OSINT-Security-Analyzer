@@ -25,6 +25,7 @@ dependencies = [
     "shodan==1.31.0",
     "requests==2.34.2",
     "python-dotenv==1.2.4",
+    "pillow==13.0.0",  # Streamlit dependency, pinned for its security fixes
 ]
 
 [project.optional-dependencies]

@@ -4,3 +4,5 @@ cohere==7.2.0
 shodan==1.31.0
 requests==2.34.2
 python-dotenv==1.2.4
+# Pulled in by Streamlit; pinned so the fix for CVE-2026-96636, CVE-2026-96644 and CVE-2026-96778 is used.
+pillow==13.0.0
