@@ -14,9 +14,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tests:
-    runs-on: ubuntu-latest
+  python:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: windows-latest
+            python-version: "3.13"
     steps:
       # Actions are pinned to full commit SHAs so a moved tag can't change what runs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -25,7 +34,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
@@ -44,3 +53,13 @@ jobs:
       # Audits the exact versions installed above, so nothing is downloaded twice
       - name: Known-vulnerable dependencies (pip-audit)
         run: pip-audit
+
+  # The branch ruleset requires a check named "tests": it passes only when every version above passed.
+  tests:
+    needs: python
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: All Python versions passed
+        run: test "${{ needs.python.result }}" = "success"

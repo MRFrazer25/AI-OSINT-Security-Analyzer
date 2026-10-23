@@ -14,8 +14,8 @@ REQUIRED_MODULES = ["streamlit", "cohere", "shodan", "requests", "dotenv"]
 
 
 def check_python_version() -> bool:
-    if sys.version_info < (3, 10):
-        print(f"Python 3.10 or newer is required (found {sys.version.split()[0]}).")
+    if sys.version_info < (3, 11):
+        print(f"Python 3.11 or newer is required (found {sys.version.split()[0]}).")
         return False
     print(f"Python {sys.version.split()[0]}")
     return True

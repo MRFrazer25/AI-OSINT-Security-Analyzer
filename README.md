@@ -68,7 +68,7 @@ This is an independent project, not affiliated with, endorsed by or sponsored by
 
 ## Running locally
 
-Requires Python 3.10+.
+Requires Python 3.11+.
 
 ```bash
 git clone https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer.git
