@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest  # noqa: E402
 
-import osint_tools as t  # noqa: E402
+import lookups as t  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

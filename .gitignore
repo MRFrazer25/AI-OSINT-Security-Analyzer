@@ -75,8 +75,8 @@ docs/_build/
 site/
 
 # Exported analysis reports (may contain sensitive findings)
-osint_report_*.md
-osint_report_*.json
+vulnerability_report_*.md
+vulnerability_report_*.json
 
 # Editor-local AI rules and settings
 .cursor/

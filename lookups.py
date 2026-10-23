@@ -1,4 +1,4 @@
-"""OSINT data-source tools used by the AI agent.
+"""Data-source lookups used by the AI agent.
 
 Every tool returns a JSON-serialisable dict with a ``tool`` key and either
 ``success: True`` plus data, ``success: False`` plus ``info`` (nothing found),
@@ -32,7 +32,7 @@ import shodan
 logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 20
-USER_AGENT = "AI-OSINT-Security-Analyzer/2.0 (+https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer)"
+USER_AGENT = "ai-vulnerability-exposure-analyzer/2.0 (+https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer)"
 MAX_TARGET_LENGTH = 253
 
 NVD_CVE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
@@ -252,7 +252,7 @@ def validate_public_ip(ip_str: str) -> Tuple[bool, Optional[str]]:
     except ValueError:
         return False, f"Invalid IP address format: {ip_str}"
     if not ip_obj.is_global or ip_obj.is_multicast:
-        return False, f"IP {ip_obj} is not a public, globally routable address and is not suitable for OSINT analysis"
+        return False, f"IP {ip_obj} is not a public, globally routable address, so it can't be looked up"
     return True, None
 
 
@@ -1028,7 +1028,7 @@ def _enrich_with_exploit_intel(vulns: List[Dict[str, Any]]) -> None:
 # DNS
 # ---------------------------------------------------------------------------
 
-def resolve_domain(domain: str) -> Dict[str, Any]:
+def _resolve_domain(domain: str) -> Dict[str, Any]:
     """Resolve a domain to its public A/AAAA records (non-public addresses are reported, not used)."""
     try:
         infos = socket.getaddrinfo(domain, None, proto=socket.IPPROTO_TCP)
@@ -1264,7 +1264,7 @@ def _find_release(distro: str, package: str, version: str) -> Tuple[Optional[str
     return None, None, [release for release, _ in found]
 
 
-def osint_distro_patch_check(package: str, package_version: str, distro: str, release: Optional[str] = None,
+def distro_patch_check(package: str, package_version: str, distro: str, release: Optional[str] = None,
                              cve_ids: Optional[Sequence[str]] = None, result_limit: int = 15) -> Dict[str, Any]:
     """Check a Debian/Ubuntu package version against the distro's own fix data, so backported fixes count."""
     distro_key = (distro or "").strip().lower()
@@ -1463,11 +1463,11 @@ def _clean_banner(text: str, limit: int) -> str:
     return text[:limit]
 
 
-def osint_resolve_domain(domain: str) -> Dict[str, Any]:
+def resolve_domain(domain: str) -> Dict[str, Any]:
     domain = (domain or "").strip().lower().rstrip(".")
     if not is_valid_domain(domain):
         return {"tool": "dns", "error": f"Invalid domain: {domain!r}"}
-    return {"tool": "dns", **resolve_domain(domain)}
+    return {"tool": "dns", **_resolve_domain(domain)}
 
 
 def _cdn_note(org: str, tags: Sequence[str]) -> Optional[str]:
@@ -1540,7 +1540,7 @@ def _internetdb_host(ip_address: str) -> Dict[str, Any]:
             result["backport_note"] = (f"The OS is {result['operating_system']}, which backports security fixes "
                                        "without changing version numbers, so NVD matches on these software "
                                        "versions may already be fixed. A Shodan key shows the package versions "
-                                       "needed for osint_distro_patch_check.")
+                                       "needed for distro_patch_check.")
     cdn = _cdn_note("", tags)
     if cdn:
         result["cdn_note"] = cdn
@@ -1557,7 +1557,7 @@ def _internetdb_host(ip_address: str) -> Dict[str, Any]:
     return result
 
 
-def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> Dict[str, Any]:
+def shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> Dict[str, Any]:
     """Look up a public IP (or a domain's primary IP) in Shodan's host database. Without a key, falls back to
     Shodan's free InternetDB (ports, software, OS and CVEs, but no banners)."""
     target = (target or "").strip()
@@ -1566,7 +1566,7 @@ def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> 
     if ok:
         ip_address = str(ipaddress.ip_address(target))
     elif is_valid_domain(target.lower()):
-        domain_info = resolve_domain(target.lower())
+        domain_info = _resolve_domain(target.lower())
         if not domain_info["success"]:
             return {"tool": "shodan", "error": f"Could not resolve {target} to a public IP", "dns": domain_info}
         ip_address = domain_info["primary_ip"]
@@ -1659,7 +1659,7 @@ def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> 
     if distro_packages:
         result["distro_packages"] = distro_packages
         result["distro_packages_note"] = ("These banners name the distro package. After the version check, run "
-                                          "osint_distro_patch_check with its affected CVE IDs: distros backport "
+                                          "distro_patch_check with its affected CVE IDs: distros backport "
                                           "fixes without changing the upstream version.")
     vulns = host.get("vulns")
     if vulns:
@@ -1716,7 +1716,7 @@ def _vcard(entity: Dict[str, Any], field_name: str) -> Optional[str]:
     return None
 
 
-def osint_ip_owner(ip_address: str) -> Dict[str, Any]:
+def ip_owner(ip_address: str) -> Dict[str, Any]:
     """Who an IP's network is registered to, from the regional internet registry (RDAP). No key needed."""
     ok, err = validate_public_ip(ip_address or "")
     if not ok:
@@ -1859,7 +1859,7 @@ def _sans_isc(ip: str) -> Dict[str, Any]:
             "credit": "SANS Internet Storm Center (DShield), CC BY-NC-SA 4.0"}
 
 
-def osint_threat_lists_check(ip_address: str, keys: Optional[ApiKeys] = None) -> Dict[str, Any]:
+def threat_lists_check(ip_address: str, keys: Optional[ApiKeys] = None) -> Dict[str, Any]:
     """Keyless reputation: Spamhaus DROP (criminal or hijacked networks) and GreyNoise (internet scanners)."""
     ok, err = validate_public_ip(ip_address or "")
     if not ok:
@@ -1900,7 +1900,7 @@ def osint_threat_lists_check(ip_address: str, keys: Optional[ApiKeys] = None) ->
     return result
 
 
-def osint_subdomains(domain: str, limit: int = 100) -> Dict[str, Any]:
+def subdomains(domain: str, limit: int = 100) -> Dict[str, Any]:
     """Hostnames under a domain that have had TLS certificates, from public certificate transparency logs."""
     domain = (domain or "").strip().lower().rstrip(".")
     if not is_valid_domain(domain):
@@ -1987,7 +1987,7 @@ def _cvedb_lookup(cve_id: str, reference_limit: int = 5) -> Optional[Dict[str, A
     return result
 
 
-def osint_virustotal_check(target: str, target_type: str, keys: ApiKeys) -> Dict[str, Any]:
+def virustotal_check(target: str, target_type: str, keys: ApiKeys) -> Dict[str, Any]:
     """VirusTotal reputation for a public IP or domain."""
     if not keys.virustotal:
         return {"tool": "virustotal", "error": f"VirusTotal API key not configured (get one at {KEY_SIGNUP_URLS['virustotal']})"}
@@ -2072,7 +2072,7 @@ def osint_virustotal_check(target: str, target_type: str, keys: ApiKeys) -> Dict
     return result
 
 
-def osint_abuseipdb_check(ip_address: str, keys: ApiKeys, max_age_days: int = 90) -> Dict[str, Any]:
+def abuseipdb_check(ip_address: str, keys: ApiKeys, max_age_days: int = 90) -> Dict[str, Any]:
     """AbuseIPDB abuse reports for a public IP (direct v2 API)."""
     if not keys.abuseipdb:
         return {"tool": "abuseipdb", "error": f"AbuseIPDB API key not configured (get one at {KEY_SIGNUP_URLS['abuseipdb']})"}
@@ -2119,7 +2119,7 @@ def osint_abuseipdb_check(ip_address: str, keys: ApiKeys, max_age_days: int = 90
     }
 
 
-def osint_nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limit: int = 5,
+def nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limit: int = 5,
                      config_limit: int = 5) -> Dict[str, Any]:
     """Full NVD record for one CVE, enriched with CISA KEV status and EPSS."""
     cve_id = (cve_id or "").strip().upper()
@@ -2168,13 +2168,13 @@ def osint_nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limi
     return {"tool": "nvd", "success": True, **summary}
 
 
-def osint_cve_search(search_term: str, keys: Optional[ApiKeys] = None, result_limit: int = 10) -> Dict[str, Any]:
+def cve_search(search_term: str, keys: Optional[ApiKeys] = None, result_limit: int = 10) -> Dict[str, Any]:
     """Keyword search of NVD; returns the most recently published matching CVEs."""
     term = " ".join((search_term or "").split())[:100]
     if not term:
         return {"tool": "cve_search", "error": "search_term is required"}
     if is_valid_cve(term):
-        return osint_nvd_lookup(term, keys)
+        return nvd_lookup(term, keys)
     try:
         # Fetch extra: NVD's keyword search also matches inside words ("ADT" hits "adt7470", "AdTribes").
         total, fetched = _nvd_most_recent({"keywordSearch": term}, keys, max(result_limit * 4, 40))
@@ -2202,11 +2202,11 @@ def osint_cve_search(search_term: str, keys: Optional[ApiKeys] = None, result_li
         "returned": len(vulns),
         "vulnerabilities": vulns,
         "note": ("Keyword matches on CVE descriptions are NOT version-checked. Use "
-                 "osint_version_specific_vulnerability_check when a version is known."),
+                 "version_specific_vulnerability_check when a version is known."),
     }
 
 
-def osint_cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
+def cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
                          software_list: Optional[Sequence[str]] = None, kev_limit: int = 10,
                          cve_id: Optional[str] = None) -> Dict[str, Any]:
     """Check CVE IDs and/or product names against CISA's Known Exploited Vulnerabilities catalog."""
@@ -2262,7 +2262,7 @@ def osint_cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
     return result
 
 
-def osint_version_specific_vulnerability_check(software_name: str, keys: Optional[ApiKeys] = None,
+def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiKeys] = None,
                                                version: Optional[str] = None, result_limit: int = 10,
                                                not_affected_limit: int = 5) -> Dict[str, Any]:
     """Find CVEs whose NVD CPE configuration actually includes this exact product version."""
@@ -2278,7 +2278,7 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
         return {"tool": "version_check", "error": str(exc)}
     if not products:
         return {"tool": "version_check", "success": False, "software": name,
-                "info": f"Could not map {name!r} to an NVD product (CPE). Try osint_cve_search instead."}
+                "info": f"Could not map {name!r} to an NVD product (CPE). Try cve_search instead."}
 
     if not version:
         try:
@@ -2428,7 +2428,7 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
                                                                  "product name failed."}),
         "patch_status_summary": {"fix_listed": len(affected) - len(no_fix), "no_fix_listed": len(no_fix)},
         "no_fix_listed_cves": no_fix,
-        "affected_cve_ids": [v["cve_id"] for v in affected],  # every one, for osint_distro_patch_check
+        "affected_cve_ids": [v["cve_id"] for v in affected],  # every one, for distro_patch_check
         "affected_cves": affected[:result_limit],
         "needs_review_count": len(unanalyzed),
         "needs_review_cves": unanalyzed[: max(3, result_limit // 2)],
@@ -2589,7 +2589,7 @@ def _no_candidates_note(products: List[Tuple[str, str]], version: str, keys: Opt
                 "Don't treat this version as safe."), True
     return (f"NVD has no CVEs recorded for {names} {version}. Very recent advisories can take days to reach NVD, so "
             "check the vendor's security advisories. If you expected older CVEs, the name may map to a different "
-            "product: retry with the vendor and product name, or use osint_cve_search."), False
+            "product: retry with the vendor and product name, or use cve_search."), False
 
 
 def _keyword_fallback_cves(name: str, products: List[Tuple[str, str]], keys: Optional[ApiKeys],
@@ -2677,16 +2677,16 @@ def _resolve_products(name: str, keys: Optional[ApiKeys]) -> List[Tuple[str, str
 
 # Tool registry used by the agent: tool name -> function.
 TOOL_FUNCTIONS = {
-    "osint_resolve_domain": osint_resolve_domain,
-    "osint_shodan_search": osint_shodan_search,
-    "osint_virustotal_check": osint_virustotal_check,
-    "osint_abuseipdb_check": osint_abuseipdb_check,
-    "osint_cve_search": osint_cve_search,
-    "osint_cisa_kev_check": osint_cisa_kev_check,
-    "osint_nvd_lookup": osint_nvd_lookup,
-    "osint_version_specific_vulnerability_check": osint_version_specific_vulnerability_check,
-    "osint_distro_patch_check": osint_distro_patch_check,
-    "osint_ip_owner": osint_ip_owner,
-    "osint_threat_lists_check": osint_threat_lists_check,
-    "osint_subdomains": osint_subdomains,
+    "resolve_domain": resolve_domain,
+    "shodan_search": shodan_search,
+    "virustotal_check": virustotal_check,
+    "abuseipdb_check": abuseipdb_check,
+    "cve_search": cve_search,
+    "cisa_kev_check": cisa_kev_check,
+    "nvd_lookup": nvd_lookup,
+    "version_specific_vulnerability_check": version_specific_vulnerability_check,
+    "distro_patch_check": distro_patch_check,
+    "ip_owner": ip_owner,
+    "threat_lists_check": threat_lists_check,
+    "subdomains": subdomains,
 }

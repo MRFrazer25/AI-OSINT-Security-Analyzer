@@ -3,10 +3,10 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-osint-security-analyzer"
+name = "ai-vulnerability-exposure-analyzer"
 version = "2.0.0"
 authors = [{ name = "Matthew Frazer" }]
-description = "AI-driven OSINT security analysis of IPs, domains, CVEs and software versions"
+description = "AI-driven analysis of IPs, domains, CVEs and software versions for confirmed vulnerabilities and exposure"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
@@ -32,12 +32,12 @@ dependencies = [
 dev = ["pytest==9.1.1", "ruff==0.17.1"]
 
 [project.urls]
-Homepage = "https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer"
-Repository = "https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer"
-Issues = "https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer/issues"
+Homepage = "https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer"
+Repository = "https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer"
+Issues = "https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer/issues"
 
 [tool.setuptools]
-py-modules = ["ai", "osint_tools", "app"]
+py-modules = ["ai", "lookups", "app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

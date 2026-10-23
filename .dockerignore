@@ -9,8 +9,8 @@ __pycache__
 .ruff_cache
 .cursor
 # Exported analysis reports and local tooling (keep them out of images)
-osint_report_*.md
-osint_report_*.json
+vulnerability_report_*.md
+vulnerability_report_*.json
 .github
 .devcontainer
 docs

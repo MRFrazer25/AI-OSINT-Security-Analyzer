@@ -1,4 +1,4 @@
-"""Streamlit front end for the AI OSINT Security Analyzer."""
+"""Streamlit front end for the AI Vulnerability Exposure Analyzer."""
 
 import json
 import logging
@@ -16,8 +16,8 @@ except ImportError:
     pass
 
 from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_markdown_export, build_report_data,
-                escape_markdown, run_osint_agent, sanitize_report_markdown)
-from osint_tools import KEY_SIGNUP_URLS, ApiKeys, classify_target
+                escape_markdown, run_agent, sanitize_report_markdown)
+from lookups import KEY_SIGNUP_URLS, ApiKeys, classify_target
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -32,21 +32,21 @@ KEY_FIELDS = {
     "greynoise": ("GreyNoise", "GREYNOISE_API_KEY", "more scanner lookups than the 10 a day allowed without one (work-email accounts only)", False),
 }
 # Which key a tool depends on, so missing-key errors can link to the sign-up page.
-TOOL_KEYS = {"osint_shodan_search": "shodan", "osint_virustotal_check": "virustotal",
-             "osint_abuseipdb_check": "abuseipdb", "osint_threat_lists_check": "greynoise"}
+TOOL_KEYS = {"shodan_search": "shodan", "virustotal_check": "virustotal",
+             "abuseipdb_check": "abuseipdb", "threat_lists_check": "greynoise"}
 TOOL_LABELS = {
-    "osint_resolve_domain": "DNS resolution",
-    "osint_shodan_search": "Shodan host lookup",
-    "osint_virustotal_check": "VirusTotal reputation",
-    "osint_abuseipdb_check": "AbuseIPDB reputation",
-    "osint_version_specific_vulnerability_check": "Version-specific CVE check (NVD)",
-    "osint_nvd_lookup": "NVD CVE lookup",
-    "osint_cisa_kev_check": "CISA KEV check",
-    "osint_cve_search": "NVD keyword search",
-    "osint_distro_patch_check": "Distro patch check (Ubuntu/Debian via OSV)",
-    "osint_ip_owner": "Network owner (internet registry)",
-    "osint_threat_lists_check": "Spamhaus DROP and GreyNoise",
-    "osint_subdomains": "Subdomains (certificate logs)",
+    "resolve_domain": "DNS resolution",
+    "shodan_search": "Shodan host lookup",
+    "virustotal_check": "VirusTotal reputation",
+    "abuseipdb_check": "AbuseIPDB reputation",
+    "version_specific_vulnerability_check": "Version-specific CVE check (NVD)",
+    "nvd_lookup": "NVD CVE lookup",
+    "cisa_kev_check": "CISA KEV check",
+    "cve_search": "NVD keyword search",
+    "distro_patch_check": "Distro patch check (Ubuntu/Debian via OSV)",
+    "ip_owner": "Network owner (internet registry)",
+    "threat_lists_check": "Spamhaus DROP and GreyNoise",
+    "subdomains": "Subdomains (certificate logs)",
 }
 
 
@@ -81,13 +81,13 @@ def describe_args(arguments) -> str:
         return ""
 
 
-st.set_page_config(page_title="AI OSINT Security Analyzer", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="AI Vulnerability Exposure Analyzer", page_icon="🔍", layout="wide")
 
 st.session_state.setdefault("user_keys", {})
 st.session_state.setdefault("report_data", None)
 st.session_state.setdefault("last_run", 0.0)
 
-st.title("AI OSINT Security Analyzer")
+st.title("AI Vulnerability Exposure Analyzer")
 st.markdown("AI-driven security analysis of IPs, domains, CVEs and software versions, powered by Cohere Command models.")
 
 with st.sidebar:
@@ -246,7 +246,7 @@ if run_clicked:
                 elif kind == "finalizing":
                     status.write("Writing the final report...")
 
-            result = run_osint_agent(target.value, keys, complexity_level, on_event=on_event, model=model_choice)
+            result = run_agent(target.value, keys, complexity_level, on_event=on_event, model=model_choice)
             if result.error:
                 status.update(label=f"Analysis finished with an error: {escape_markdown(result.error)}",
                               state="error")
@@ -290,7 +290,7 @@ if data:
     st.markdown(sanitize_report_markdown(data["report_markdown"]))
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base = f"osint_report_{safe_filename(meta['target'])}_{stamp}"
+    base = f"vulnerability_report_{safe_filename(meta['target'])}_{stamp}"
     d1, d2 = st.columns(2)
     d1.download_button("Download report (Markdown)", build_markdown_export(data), f"{base}.md", "text/markdown",
                        on_click="ignore", width="stretch")
@@ -315,5 +315,5 @@ st.caption(
     "can be wrong. Verify before acting.  \n"
     "Testing so far has focused on common software and devices, so results for less common products may be "
     "less reliable. If a result looks wrong, please "
-    "[open an issue](https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer/issues) with the target you used."
+    "[open an issue](https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer/issues) with the target you used."
 )

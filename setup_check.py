@@ -44,11 +44,11 @@ def verify_imports() -> bool:
             ok = False
     try:
         sys.path.insert(0, str(ROOT))
-        from ai import OSINT_TOOLS
-        from osint_tools import classify_target
+        from ai import AGENT_TOOLS
+        from lookups import classify_target
 
         assert classify_target("8.8.8.8").type == "ip"
-        print(f"  OK       agent ({len(OSINT_TOOLS)} tools)")
+        print(f"  OK       agent ({len(AGENT_TOOLS)} tools)")
     except Exception as exc:
         print(f"  FAILED   agent self-test: {exc}")
         ok = False
@@ -65,11 +65,11 @@ def ensure_env_file() -> None:
 
 
 def main() -> None:
-    print("AI OSINT Security Analyzer setup\n" + "=" * 40)
+    print("AI Vulnerability Exposure Analyzer setup\n" + "=" * 40)
     if not check_python_version() or not install_requirements() or not verify_imports():
         sys.exit(1)
     ensure_env_file()
-    from osint_tools import KEY_SIGNUP_URLS
+    from lookups import KEY_SIGNUP_URLS
 
     print("\nGet your API keys here, then enter them in the app (Cohere is required, the rest are optional):")
     for name, url in KEY_SIGNUP_URLS.items():

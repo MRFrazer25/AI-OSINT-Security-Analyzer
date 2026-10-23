@@ -1,4 +1,4 @@
-# AI OSINT Security Analyzer
+# AI Vulnerability Exposure Analyzer
 
 An AI agent that investigates IP addresses, domains, CVEs and software versions across several threat-intelligence sources. It then writes an evidence-based security assessment. Cohere's Command A+ model decides which tools to run, and every finding in the report is tied back to the source that produced it.
 
@@ -69,8 +69,8 @@ This is an independent project, not affiliated with, endorsed by or sponsored by
 Requires Python 3.11+.
 
 ```bash
-git clone https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer.git
-cd AI-OSINT-Security-Analyzer
+git clone https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer.git
+cd ai-vulnerability-exposure-analyzer
 python setup_check.py
 ```
 
@@ -129,7 +129,7 @@ Exported reports can contain sensitive findings. Handle them accordingly.
 * Banner versions can mislead. Linux distributions often backport security fixes without changing the version string. The distro patch check handles Ubuntu and Debian packages whose banner includes the package version (mainly OpenSSH); for others, such as Apache or nginx on Ubuntu and anything on Red Hat, verify findings against your distribution's security tracker.
 * "No known vulnerabilities" means no matching NVD records, not that a system is secure.
 * A product-level CISA KEV match shows that the product has been exploited before, not that the target's version is affected.
-* Testing so far has focused on common software and devices, so results for less common products may be less reliable. If a result looks wrong, please [open an issue](https://github.com/MRFrazer25/AI-OSINT-Security-Analyzer/issues) with the target you used.
+* Testing so far has focused on common software and devices, so results for less common products may be less reliable. If a result looks wrong, please [open an issue](https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer/issues) with the target you used.
 
 ## License
 

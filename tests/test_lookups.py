@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import osint_tools as t
+import lookups as t
 
 
 @pytest.mark.parametrize("raw, expected_type, expected_value", [
@@ -142,13 +142,13 @@ def test_api_keys_overrides_and_redaction():
 
 def test_tools_reject_invalid_input_without_network():
     keys = t.ApiKeys(shodan="k", virustotal="k", abuseipdb="k")
-    assert "error" in t.osint_abuseipdb_check("192.168.1.1", keys)
-    assert "error" in t.osint_virustotal_check("../../etc", "domain", keys)
-    assert "error" in t.osint_shodan_search("127.0.0.1", keys)
-    assert "error" in t.osint_nvd_lookup("CVE-2021-44228?foo=bar")
-    assert "error" in t.osint_cisa_kev_check()
-    assert "error" in t.osint_shodan_search("127.0.0.1", t.ApiKeys())  # no key: still refused before InternetDB
-    assert "error" in t.osint_ip_owner("10.0.0.1")
+    assert "error" in t.abuseipdb_check("192.168.1.1", keys)
+    assert "error" in t.virustotal_check("../../etc", "domain", keys)
+    assert "error" in t.shodan_search("127.0.0.1", keys)
+    assert "error" in t.nvd_lookup("CVE-2021-44228?foo=bar")
+    assert "error" in t.cisa_kev_check()
+    assert "error" in t.shodan_search("127.0.0.1", t.ApiKeys())  # no key: still refused before InternetDB
+    assert "error" in t.ip_owner("10.0.0.1")
 
 
 class _Resp:
@@ -166,7 +166,7 @@ def test_shodan_without_a_key_falls_back_to_internetdb(monkeypatch):
     seen = []
     monkeypatch.setattr(t, "_http_get", lambda url, **k: seen.append(url) or _Resp(200, body))
     monkeypatch.setattr(t, "kev_matches_for_software", lambda names: {})
-    r = t.osint_shodan_search("45.33.32.156", t.ApiKeys())
+    r = t.shodan_search("45.33.32.156", t.ApiKeys())
     assert seen == ["https://internetdb.shodan.io/45.33.32.156"]
     assert r["success"] and r["data_source"].startswith("Shodan InternetDB") and r["open_ports"] == [22, 80]
     # The vendor is kept, so "http server" can't match other vendors' HTTP servers in KEV; OS CPEs are kept apart.
@@ -175,7 +175,7 @@ def test_shodan_without_a_key_falls_back_to_internetdb(monkeypatch):
     assert r["operating_system"] == "canonical ubuntu linux" and "backports" in r["backport_note"]
     assert r["shodan_inferred_cves"] == ["CVE-2014-0226"] and "key_hint" in r
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(404, {"detail": "No information available"}))
-    assert t.osint_shodan_search("45.33.32.156", t.ApiKeys())["success"] is False
+    assert t.shodan_search("45.33.32.156", t.ApiKeys())["success"] is False
 
 
 def test_vendor_prefixed_cpe_names_resolve_to_the_product():
@@ -204,11 +204,11 @@ def test_threat_lists_check_spamhaus_drop_and_greynoise(monkeypatch):
             return _TextResp(200, DROP_V4)
         return _Resp(200, {"noise": True, "riot": False, "classification": "malicious", "name": "unknown"})
     monkeypatch.setattr(t, "_http_get", fake_get)
-    listed = t.osint_threat_lists_check("1.10.16.5")
+    listed = t.threat_lists_check("1.10.16.5")
     assert listed["spamhaus_drop"]["listed"] and listed["spamhaus_drop"]["sbl_id"] == "SBL256894"
     assert "Spamhaus Project" in listed["spamhaus_drop"]["credit"]
     assert "malicious" in listed["greynoise"]["meaning"]
-    clean = t.osint_threat_lists_check("8.8.8.8")
+    clean = t.threat_lists_check("8.8.8.8")
     assert clean["spamhaus_drop"]["listed"] is False and "weak evidence" in clean["spamhaus_drop"]["meaning"]
     assert len(downloads) == 1  # Spamhaus asks for at most one download a day
 
@@ -217,25 +217,25 @@ def test_threat_lists_check_survives_one_source_failing(monkeypatch):
     monkeypatch.setattr(t, "_drop_cache", t._TTLCache(60))
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _TextResp(200, DROP_V4) if "spamhaus" in url
                         else _Resp(429, {}))
-    r = t.osint_threat_lists_check("8.8.8.8")
+    r = t.threat_lists_check("8.8.8.8")
     assert r["success"] and "10 lookups a day" in r["greynoise"]["error"]
     monkeypatch.setattr(t, "_drop_cache", t._TTLCache(60))
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(503, {}))
-    assert "error" in t.osint_threat_lists_check("8.8.8.8")
+    assert "error" in t.threat_lists_check("8.8.8.8")
 
 
 def test_subdomains_come_from_certificate_logs_and_are_validated(monkeypatch):
     rows = [{"name_value": "nmap.org\nwww.nmap.org\n*.nmap.org"}, {"name_value": "evil.com\nbad name.nmap.org"},
             {"name_value": "svn.nmap.org"}]
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(200, rows))
-    r = t.osint_subdomains("nmap.org")
+    r = t.subdomains("nmap.org")
     assert r["source"] == "crt.sh" and r["subdomains"] == ["nmap.org", "svn.nmap.org", "www.nmap.org"]
     assert r["wildcard_certificates"] == ["nmap.org"]
     # crt.sh down: Cert Spotter is tried instead.
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(502, None) if "crt.sh" in url
                         else _Resp(200, [{"dns_names": ["mail.nmap.org"]}]))
-    assert t.osint_subdomains("nmap.org")["subdomains"] == ["mail.nmap.org"]
-    assert "error" in t.osint_subdomains("not a domain")
+    assert t.subdomains("nmap.org")["subdomains"] == ["mail.nmap.org"]
+    assert "error" in t.subdomains("not a domain")
 
 
 def test_nvd_lookup_falls_back_to_cvedb_when_nvd_fails(monkeypatch):
@@ -246,12 +246,12 @@ def test_nvd_lookup_falls_back_to_cvedb_when_nvd_fails(monkeypatch):
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(200, {
         "cve_id": "CVE-2024-6387", "summary": "regreSSHion", "cvss_v3": 8.1, "epss": 0.99506, "ranking_epss": 0.9995,
         "references": ["https://example.com/a"], "published_time": "2024-07-01T13:15:00", "cpes": []}))
-    r = t.osint_nvd_lookup("CVE-2024-6387")
+    r = t.nvd_lookup("CVE-2024-6387")
     assert r["success"] and r["data_source"].startswith("Shodan CVEDB")
     assert (r["cvss_score"], r["severity"], r["epss"]["percent"]) == (8.1, "HIGH", "99.51%")
     assert r["in_cisa_kev"] is False and r["nvd_error"] == "NVD rate limit reached"
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(404, {}))
-    assert t.osint_nvd_lookup("CVE-2024-6387")["error"] == "NVD rate limit reached"
+    assert t.nvd_lookup("CVE-2024-6387")["error"] == "NVD rate limit reached"
 
 
 def test_ip_owner_reads_the_registry_record(monkeypatch):
@@ -264,7 +264,7 @@ def test_ip_owner_reads_the_registry_record(monkeypatch):
     urls = []
     monkeypatch.setattr(t, "_rdap_bootstrap_cache", t._TTLCache(60))
     monkeypatch.setattr(t, "_http_get", lambda url, **k: urls.append(url) or _Resp(200, bootstrap if "iana" in url else record))
-    r = t.osint_ip_owner("8.8.8.8")
+    r = t.ip_owner("8.8.8.8")
     assert urls[-1] == "https://rdap.arin.net/registry/ip/8.8.8.8"  # https only
     assert (r["organization"], r["cidr"], r["abuse_contact"], r["registry"]) == (
         "Google LLC", ["8.8.8.0/24"], "network-abuse@google.com", "rdap.arin.net")
@@ -279,7 +279,7 @@ def test_kev_check_accepts_string_instead_of_list(monkeypatch):
                                                            "product": "HTTP Server"}]}
     catalog["by_cve"] = {"CVE-2021-41773": catalog["vulnerabilities"][0]}
     monkeypatch.setattr(t, "_load_kev_catalog", lambda: catalog)
-    result = t.osint_cisa_kev_check(cve_ids="CVE-2021-41773", software_list="Apache httpd")
+    result = t.cisa_kev_check(cve_ids="CVE-2021-41773", software_list="Apache httpd")
     assert result["cves_in_kev"] == ["CVE-2021-41773"]
     assert result["software_matches"]["Apache httpd"]["total_kev_entries"] == 1
 
@@ -312,7 +312,7 @@ def test_shodan_uses_server_header_and_flags_kev_vendor(monkeypatch):
     monkeypatch.setattr(t.shodan, "Shodan", FakeShodan)
     monkeypatch.setattr(t, "_load_kev_catalog", lambda: catalog)
 
-    result = t.osint_shodan_search("8.8.8.8", t.ApiKeys(shodan="k"))
+    result = t.shodan_search("8.8.8.8", t.ApiKeys(shodan="k"))
     software = {s["name"]: s for s in result["discovered_software"]}
     assert software["Dahua Rtsp Server"]["source"] == "server_header"
     assert (software["nginx"]["version"], software["nginx"]["source"]) == ("1.18.0", "server_header")
@@ -358,7 +358,7 @@ def test_cve_search_drops_substring_only_matches(monkeypatch):
     cves = [{"id": "CVE-1", "published": "2026", "descriptions": [{"lang": "en", "value": "hwmon: adt7470 bug"}]},
             {"id": "CVE-2", "published": "2025", "descriptions": [{"lang": "en", "value": "AdTribes plugin"}]}]
     monkeypatch.setattr(t, "_nvd_most_recent", lambda params, keys, limit: (82, cves))
-    result = t.osint_cve_search("ADT")
+    result = t.cve_search("ADT")
     assert result["success"] is False and "only inside other words" in result["info"]
 
 
@@ -379,7 +379,7 @@ def test_shodan_flags_cdn_ips(monkeypatch, host, is_cdn):
 
     monkeypatch.setattr(t.shodan, "Shodan", FakeShodan)
     monkeypatch.setattr(t, "kev_matches_for_software", lambda names: {})
-    assert ("cdn_note" in t.osint_shodan_search("8.8.8.8", t.ApiKeys(shodan="k"))) is is_cdn
+    assert ("cdn_note" in t.shodan_search("8.8.8.8", t.ApiKeys(shodan="k"))) is is_cdn
 
 
 def test_kev_matching_handles_numbered_product_names():
@@ -449,7 +449,7 @@ def test_version_check_ranks_by_kev_then_epss_and_reports_patch_status(monkeypat
         "known_ransomware_use": "Unknown", "date_added": _days_ago(5)}})
     monkeypatch.setattr(t, "epss_lookup_many", lambda ids: {
         "CVE-2000-0001": {"epss": 0.01}, "CVE-2000-0002": {"epss": 0.9}})
-    result = t.osint_version_specific_vulnerability_check("nginx", version="1.2")
+    result = t.version_specific_vulnerability_check("nginx", version="1.2")
     assert [v["cve_id"] for v in result["affected_cves"]] == ["CVE-2000-0003", "CVE-2000-0002", "CVE-2000-0001"]
     assert result["patch_status_summary"] == {"fix_listed": 2, "no_fix_listed": 1}
     assert result["no_fix_listed_cves"] == ["CVE-2000-0002"]
@@ -494,7 +494,7 @@ JAMMY = {"Ubuntu:22.04:LTS": {"versions": ["8.9p1-3ubuntu0.6", "8.9p1-3ubuntu0.1
 
 def test_distro_check_separates_backported_fixes_from_open_cves(monkeypatch):
     _fake_osv(monkeypatch, JAMMY)
-    r = t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu",
+    r = t.distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu",
                                    cve_ids=["CVE-2024-6387", "CVE-2023-48795", "CVE-2099-0001"])
     assert r["release"] == "22.04" and r["osv_ecosystem"] == "Ubuntu:22.04:LTS"
     assert r["fixed_by_backport"] == ["CVE-2023-48795"]
@@ -505,24 +505,24 @@ def test_distro_check_separates_backported_fixes_from_open_cves(monkeypatch):
     unfixed = next(v for v in r["open_in_package"] if v["cve_id"] == "CVE-2016-20012")
     assert unfixed["package_fix"] == "Ubuntu has not released a fix yet"
     # After the update, the same CVE counts as fixed by the backport.
-    assert t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.10", "Ubuntu",
+    assert t.distro_patch_check("openssh", "8.9p1-3ubuntu0.10", "Ubuntu",
                                       cve_ids=["CVE-2024-6387"])["fixed_by_backport"] == ["CVE-2024-6387"]
 
 
 def test_distro_release_must_be_unambiguous(monkeypatch):
     both = {"versions": ["9.2p1-2"], "records": []}
     _fake_osv(monkeypatch, {"Debian:13": both, "Debian:12": both})
-    r = t.osint_distro_patch_check("openssh", "9.2p1-2", "Debian")
+    r = t.distro_patch_check("openssh", "9.2p1-2", "Debian")
     assert r["success"] is False and "several Debian releases (13, 12)" in r["info"]
     # Debian security updates name their release, so no lookup is needed to place them.
-    assert t.osint_distro_patch_check("openssh", "9.2p1-2+deb12u3", "Debian")["release"] == "12"
-    assert "Unknown Ubuntu release" in t.osint_distro_patch_check("openssh", "1.0-1", "Ubuntu", release="9.99")["error"]
+    assert t.distro_patch_check("openssh", "9.2p1-2+deb12u3", "Debian")["release"] == "12"
+    assert "Unknown Ubuntu release" in t.distro_patch_check("openssh", "1.0-1", "Ubuntu", release="9.99")["error"]
 
 
 def test_distro_check_rejects_bad_input_without_network():
-    assert "error" in t.osint_distro_patch_check("openssh", "1.0", "Fedora")
-    assert "error" in t.osint_distro_patch_check("open ssh;rm", "1.0", "Ubuntu")
-    assert "error" in t.osint_distro_patch_check("openssh", "x" * 200, "Ubuntu")
+    assert "error" in t.distro_patch_check("openssh", "1.0", "Fedora")
+    assert "error" in t.distro_patch_check("open ssh;rm", "1.0", "Ubuntu")
+    assert "error" in t.distro_patch_check("openssh", "x" * 200, "Ubuntu")
 
 
 def test_api_error_detail_is_extracted_and_redacted():
@@ -673,7 +673,7 @@ def test_kev_entries_naming_only_the_vendor_match_by_vulnerability_name():
 
 def test_distro_check_gives_the_package_update_and_unfixed_cves(monkeypatch):
     _fake_osv(monkeypatch, JAMMY)
-    r = t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu", result_limit=1)
+    r = t.distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu", result_limit=1)
     assert r["update_package_to_at_least"]["text"] == "openssh 1:8.9p1-3ubuntu0.10 or later"
     assert r["update_package_to_at_least"]["fixes"] == "1 of 2 CVEs still open in this package"
     assert r["no_fix_released_yet"] == ["CVE-2016-20012"]
@@ -763,14 +763,14 @@ def test_greynoise_is_skipped_for_ipv6(monkeypatch):
     monkeypatch.setattr(t, "_drop_cache", t._TTLCache(60))
     calls = []
     monkeypatch.setattr(t, "_http_get", lambda url, **k: calls.append(url) or _TextResp(200, DROP_V4))
-    r = t.osint_threat_lists_check("2606:4700:4700::1111")
+    r = t.threat_lists_check("2606:4700:4700::1111")
     assert "IPv4 addresses only" in r["greynoise"]["error"]
     assert not any("greynoise" in u for u in calls)
 
 
 def test_distro_release_given_must_contain_the_version(monkeypatch):
     _fake_osv(monkeypatch, JAMMY)
-    r = t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu", release="18.04")
+    r = t.distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu", release="18.04")
     assert r["success"] is False and "isn't a package version in Ubuntu 18.04" in r["info"]
     assert "It matches Ubuntu 22.04" in r["info"]
 
@@ -819,7 +819,7 @@ def test_release_records_are_merged_across_standard_and_pro(monkeypatch):
         {"cve_id": "CVE-2023-48795", "ranges": [[{"introduced": "0"}, {"fixed": "1:6.6p1-2ubuntu2.13+esm4"}]],
          "versions": [], "availability": "Available with Ubuntu Pro"}]}
     _fake_osv(monkeypatch, {"Ubuntu:14.04:LTS": standard, "Ubuntu:Pro:14.04:LTS": pro})
-    r = t.osint_distro_patch_check("openssh", "6.6.1p1-2ubuntu2.13", "Ubuntu",
+    r = t.distro_patch_check("openssh", "6.6.1p1-2ubuntu2.13", "Ubuntu",
                                    cve_ids=["CVE-2016-6210", "CVE-2023-48795"])
     assert r["release"] == "14.04" and r["package_version"] == "6.6p1-2ubuntu2.13"
     assert r["fixed_by_backport"] == ["CVE-2016-6210"] and r["still_affects_package"] == ["CVE-2023-48795"]
@@ -837,7 +837,7 @@ def test_shodan_versions_drop_line_breaks(monkeypatch):
                              {"port": 80, "product": "Apache", "version": "2.4.7\r\n"}], "ports": [22, 80]}
     monkeypatch.setattr(t.shodan, "Shodan", FakeShodan)
     monkeypatch.setattr(t, "kev_matches_for_software", lambda names: {})
-    services = t.osint_shodan_search("45.33.32.156", t.ApiKeys(shodan="k"))["services"]
+    services = t.shodan_search("45.33.32.156", t.ApiKeys(shodan="k"))["services"]
     assert [s["version"] for s in services] == ["6.6.1p1 Ubuntu 2ubuntu2.13", "2.4.7"]
 
 
@@ -863,7 +863,7 @@ def test_sans_isc_answers_when_greynoise_cannot(monkeypatch):
             return _Resp(429, {})
         return _Resp(200, isc)
     monkeypatch.setattr(t, "_http_get", fake_get)
-    r = t.osint_threat_lists_check("8.8.8.8")
+    r = t.threat_lists_check("8.8.8.8")
     assert "10 lookups a day" in r["greynoise"]["error"]
     assert r["sans_isc"]["reports"] == 12 and "blocklistde" in r["sans_isc"]["meaning"]
     assert "legitimate services" in r["sans_isc"]["meaning"]
@@ -911,7 +911,7 @@ def test_version_check_says_when_nvd_numbers_versions_differently(monkeypatch):
         {"vulnerable": True, "criteria": "cpe:2.3:a:microsoft:exchange_server:2019:cumulative_update_14:*:*:*:*:*:*"}]}]}]}
     monkeypatch.setattr(t, "_nvd_get", lambda url, params, keys: {"totalResults": 0, "vulnerabilities": []})
     monkeypatch.setattr(t, "_nvd_most_recent", lambda params, keys, limit: (1, [exchange]))
-    r = t.osint_version_specific_vulnerability_check("Microsoft Exchange Server", version="15.2.1544.4")
+    r = t.version_specific_vulnerability_check("Microsoft Exchange Server", version="15.2.1544.4")
     assert r["security_status"] == "VERSION_NOT_MATCHED"
     assert "2019 cumulative_update_14" in r["no_candidates_note"] and "Don't treat this version as safe" in r["no_candidates_note"]
 

@@ -4,15 +4,15 @@ from types import SimpleNamespace
 import pytest
 
 import ai
-from osint_tools import ApiKeys
+from lookups import ApiKeys
 
 
 @pytest.fixture(autouse=True)
 def offline_keyless_sources(monkeypatch):
-    import osint_tools as t
-    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "osint_ip_owner",
+    import lookups as t
+    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "ip_owner",
                         lambda ip_address: {"tool": "rdap", "success": False, "info": "offline"})
-    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "osint_threat_lists_check",
+    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "threat_lists_check",
                         lambda ip_address, keys=None: {"tool": "threat_lists", "success": False, "info": "offline"})
     monkeypatch.setattr(t, "_internetdb_host",
                         lambda ip: {"tool": "shodan", "success": False, "info": "offline"})
@@ -46,13 +46,13 @@ def test_agent_runs_tools_and_returns_report(monkeypatch):
         return {"tool": "shodan", "success": True, "ip": target,
                 "discovered_software": [{"name": "nginx", "version": "1.20.1", "port": 443}]}
 
-    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "osint_shodan_search", fake_shodan)
+    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "shodan_search", fake_shodan)
     client = FakeClient([
-        _response([_call("c1", "osint_shodan_search", {"target": "8.8.8.8", "banner_limit": 99999})], plan="look up"),
+        _response([_call("c1", "shodan_search", {"target": "8.8.8.8", "banner_limit": 99999})], plan="look up"),
         _response(text="## Executive Summary\nOverall risk: LOW"),
     ])
     keys = ApiKeys(shodan="secret")
-    result = ai.run_osint_agent("8.8.8.8", keys, "Quick Scan", client=client)
+    result = ai.run_agent("8.8.8.8", keys, "Quick Scan", client=client)
 
     assert result.error is None
     assert result.stop_reason == "completed"
@@ -71,11 +71,11 @@ def test_agent_runs_tools_and_returns_report(monkeypatch):
 
 def test_bad_arguments_still_produce_tool_message_and_forced_final_report(monkeypatch):
     client = FakeClient(
-        [_response([SimpleNamespace(id=f"c{i}", function=SimpleNamespace(name="osint_nvd_lookup", arguments="{bad"))])
+        [_response([SimpleNamespace(id=f"c{i}", function=SimpleNamespace(name="nvd_lookup", arguments="{bad"))])
          for i in range(ai.COMPLEXITY_PROFILES["Quick Scan"]["max_iterations"])]
         + [_response(text="final")]
     )
-    result = ai.run_osint_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client)
+    result = ai.run_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client)
     assert result.report == "final"
     assert result.stop_reason in ("iteration_limit", "tool_budget_exhausted")
     assert client.requests[-1].get("tool_choice") == "NONE"
@@ -84,13 +84,13 @@ def test_bad_arguments_still_produce_tool_message_and_forced_final_report(monkey
 
 def test_quota_tools_are_capped_and_duplicates_cached(monkeypatch):
     calls = []
-    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "osint_abuseipdb_check",
+    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "abuseipdb_check",
                         lambda ip_address, keys: calls.append(ip_address) or {"tool": "abuseipdb", "success": True})
-    batch = [_call("a", "osint_abuseipdb_check", {"ip_address": "8.8.8.8"}),
-             _call("b", "osint_abuseipdb_check", {"ip_address": "8.8.8.8"}),
-             _call("c", "osint_abuseipdb_check", {"ip_address": "1.1.1.1"})]
+    batch = [_call("a", "abuseipdb_check", {"ip_address": "8.8.8.8"}),
+             _call("b", "abuseipdb_check", {"ip_address": "8.8.8.8"}),
+             _call("c", "abuseipdb_check", {"ip_address": "1.1.1.1"})]
     client = FakeClient([_response(batch), _response(text="done")])
-    result = ai.run_osint_agent("8.8.8.8", ApiKeys(abuseipdb="k"), "Quick Scan", client=client)
+    result = ai.run_agent("8.8.8.8", ApiKeys(abuseipdb="k"), "Quick Scan", client=client)
     # The baseline lookup ran it once; the model's repeats come from cache and the new IP hits the per-run cap.
     assert calls == ["8.8.8.8"]
     assert "Duplicate" in result.tool_calls[-3].result["_note"]
@@ -101,20 +101,20 @@ def test_quota_tools_are_capped_and_duplicates_cached(monkeypatch):
 def test_baseline_lookups_run_in_code_before_the_model():
     # Real failure: a model skipped VirusTotal/AbuseIPDB, then reported "no reputation data found".
     client = FakeClient([_response(text="report")])
-    result = ai.run_osint_agent("8.8.8.8", ApiKeys(), "Quick Scan", client=client)
+    result = ai.run_agent("8.8.8.8", ApiKeys(), "Quick Scan", client=client)
     baseline = [r.tool for r in result.tool_calls if r.iteration == 0]
-    assert baseline == ["osint_shodan_search", "osint_virustotal_check", "osint_abuseipdb_check",
-                        "osint_ip_owner", "osint_threat_lists_check"]
+    assert baseline == ["shodan_search", "virustotal_check", "abuseipdb_check",
+                        "ip_owner", "threat_lists_check"]
     first_prompt = client.requests[0]["messages"][1]["content"]
     assert "<baseline_results>" in first_prompt and "VirusTotal API key not configured" in first_prompt
     # CVE targets have no baseline (nothing exposure-related to look up).
     client = FakeClient([_response(text="report")])
-    assert not ai.run_osint_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client).tool_calls
+    assert not ai.run_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client).tool_calls
 
 
 def test_invalid_target_and_missing_key_fail_fast():
-    assert ai.run_osint_agent("10.1.1.1", ApiKeys(cohere="k")).error
-    assert "Cohere API key" in ai.run_osint_agent("8.8.8.8", ApiKeys()).error
+    assert ai.run_agent("10.1.1.1", ApiKeys(cohere="k")).error
+    assert "Cohere API key" in ai.run_agent("8.8.8.8", ApiKeys()).error
 
 
 def test_large_results_are_compacted():
@@ -124,9 +124,9 @@ def test_large_results_are_compacted():
 
 
 def test_argument_types_are_coerced_and_unknown_args_dropped():
-    assert ai._coerce_args("osint_cisa_kev_check", {"cve_ids": "CVE-2021-44228", "kev_limit": 999}) == \
+    assert ai._coerce_args("cisa_kev_check", {"cve_ids": "CVE-2021-44228", "kev_limit": 999}) == \
         {"cve_ids": ["CVE-2021-44228"]}
-    assert ai._coerce_args("osint_version_specific_vulnerability_check",
+    assert ai._coerce_args("version_specific_vulnerability_check",
                            {"software_name": "nginx", "version": 1.2}) == {"software_name": "nginx", "version": "1.2"}
 
 
@@ -188,7 +188,7 @@ def test_report_sanitizer_keeps_safe_formatting():
 def test_markdown_export_escapes_banner_derived_software_names():
     # The software name comes straight from a host's "Server:" header when Shodan's product field is empty.
     hostile = "![x](https://evil.example/p.png)<img src=x>"
-    record = ai.ToolCallRecord("osint_shodan_search", {}, 0, "t", 1, {
+    record = ai.ToolCallRecord("shodan_search", {}, 0, "t", 1, {
         "tool": "shodan", "success": True, "discovered_software": [{"name": hostile, "version": None}]})
     result = ai.AgentResult(target=ai.classify_target("8.8.8.8"), report="![r]\n\n[r]: https://evil.example/q",
                             complexity="Quick Scan", model="m", tool_calls=[record])
@@ -214,7 +214,7 @@ def test_falls_back_when_default_model_is_rejected():
 
     events = []
     client = RejectingClient([_response(text="report")])
-    result = ai.run_osint_agent("CVE-2021-44228", ApiKeys(), "Quick Scan",
+    result = ai.run_agent("CVE-2021-44228", ApiKeys(), "Quick Scan",
                                 on_event=lambda kind, payload: events.append(kind), client=client)
     assert result.report == "report"
     assert result.model == ai.FALLBACK_MODEL
@@ -233,15 +233,15 @@ def test_final_report_retries_without_tool_choice():
 
     steps = ai.COMPLEXITY_PROFILES["Quick Scan"]["max_iterations"]
     client = NoToolChoiceClient(
-        [_response([_call(f"c{i}", "osint_nvd_lookup", {"cve_id": "bad"})]) for i in range(steps)]
+        [_response([_call(f"c{i}", "nvd_lookup", {"cve_id": "bad"})]) for i in range(steps)]
         + [_response(text="final")]
     )
-    assert ai.run_osint_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client).report == "final"
+    assert ai.run_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client).report == "final"
 
 
 def test_user_selected_model_is_used_with_its_token_limit():
     client = FakeClient([_response(text="report")])
-    result = ai.run_osint_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client,
+    result = ai.run_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client,
                                 model="command-a-reasoning-08-2025")
     assert result.model == "command-a-reasoning-08-2025"
     assert client.requests[0]["model"] == "command-a-reasoning-08-2025"
@@ -250,13 +250,13 @@ def test_user_selected_model_is_used_with_its_token_limit():
 
 def test_unlisted_model_is_rejected_in_favor_of_default():
     client = FakeClient([_response(text="report")])
-    result = ai.run_osint_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client, model="some-other-model")
+    result = ai.run_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client, model="some-other-model")
     assert result.model == ai.DEFAULT_MODEL
     assert client.requests[0]["model"] == ai.DEFAULT_MODEL
 
 
 def test_report_data_separates_confirmed_and_related_kev():
-    record = ai.ToolCallRecord("osint_shodan_search", {}, 1, "t", 1, {
+    record = ai.ToolCallRecord("shodan_search", {}, 1, "t", 1, {
         "tool": "shodan", "success": True, "discovered_software": [],
         "cisa_kev_product_matches": {"Dahua Rtsp Server": {"entries": [{"cve_id": "CVE-2021-33044"}]}}})
     result = ai.AgentResult(target=ai.classify_target("8.8.8.8"), report="r", complexity="Quick Scan",
@@ -274,32 +274,32 @@ def _summary(records, target="8.8.8.8"):
 
 def test_kev_counts_do_not_depend_on_which_tools_the_model_called():
     # Real inconsistency: one model also looked the CVEs up directly, which used to flip them to "confirmed".
-    shodan = ("osint_shodan_search", {"tool": "shodan", "success": True, "cisa_kev_product_matches": {
+    shodan = ("shodan_search", {"tool": "shodan", "success": True, "cisa_kev_product_matches": {
         "Dahua": {"entries": [{"cve_id": "CVE-2021-33044"}, {"cve_id": "CVE-2021-33045"}]}}})
-    lookup = ("osint_cisa_kev_check", {"tool": "cisa_kev", "success": True,
+    lookup = ("cisa_kev_check", {"tool": "cisa_kev", "success": True,
                                        "cves_in_kev": ["CVE-2021-33044", "CVE-2021-33045"]})
     assert _summary([shodan]) == _summary([shodan, lookup])
     assert _summary([shodan, lookup])["cisa_kev_confirmed"] == []
 
 
 def test_kev_confirmed_for_version_match_and_cve_target():
-    version = ("osint_version_specific_vulnerability_check", {"tool": "version_check", "success": True,
+    version = ("version_specific_vulnerability_check", {"tool": "version_check", "success": True,
                "affected_cves": [{"cve_id": "CVE-2021-44228", "in_cisa_kev": True}],
                "affected_in_cisa_kev": ["CVE-2021-44228"]})
     assert _summary([version])["cisa_kev_confirmed"] == ["CVE-2021-44228"]
-    nvd = ("osint_nvd_lookup", {"tool": "nvd", "success": True, "cve_id": "CVE-2021-44228", "in_cisa_kev": True})
+    nvd = ("nvd_lookup", {"tool": "nvd", "success": True, "cve_id": "CVE-2021-44228", "in_cisa_kev": True})
     assert _summary([nvd], target="CVE-2021-44228")["cisa_kev_confirmed"] == ["CVE-2021-44228"]
 
 
 def test_key_facts_are_built_from_tool_data_without_the_model():
-    shodan = ("osint_shodan_search", {
+    shodan = ("shodan_search", {
         "tool": "shodan", "success": True, "organization": "ISP", "asn": "AS1", "country": "US",
         "services": [{"port": 554, "transport": "tcp", "product": None, "server_header": "Dahua Rtsp Server"}],
         "cisa_kev_product_matches": {"Dahua Rtsp Server": {"entries": [
             {"cve_id": "CVE-2021-33044", "epss": {"epss": 0.99987, "percentile": 0.9998}}]}}})
-    vt = ("osint_virustotal_check", {"tool": "virustotal", "success": True, "malicious": 0, "suspicious": 0,
+    vt = ("virustotal_check", {"tool": "virustotal", "success": True, "malicious": 0, "suspicious": 0,
                                      "total_engines": 91, "threat_level": "NONE"})
-    failed = ("osint_abuseipdb_check", {"tool": "abuseipdb", "error": "AbuseIPDB API key not configured"})
+    failed = ("abuseipdb_check", {"tool": "abuseipdb", "error": "AbuseIPDB API key not configured"})
     result = ai.AgentResult(target=ai.classify_target("8.8.8.8"), report="", complexity="Quick Scan", model="m",
                             tool_calls=[ai.ToolCallRecord(n, {}, 1, "t", 1, r) for n, r in (shodan, vt, failed)])
     facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
@@ -314,13 +314,13 @@ def test_key_facts_are_built_from_tool_data_without_the_model():
 
 def test_vendor_wide_kev_checks_are_not_counted_as_related():
     # Real noise: on 8.8.8.8 the model checked "Google", which listed Chrome/Pixel CVEs as related to a DNS server.
-    shodan = ("osint_shodan_search", {"tool": "shodan", "success": True,
+    shodan = ("shodan_search", {"tool": "shodan", "success": True,
                                       "discovered_software": [{"name": "scaffolding on HTTPServer2"}]})
-    google = ("osint_cisa_kev_check", {"tool": "cisa_kev", "success": True, "software_matches": {
+    google = ("cisa_kev_check", {"tool": "cisa_kev", "success": True, "software_matches": {
         "Google": {"most_recent": [{"cve_id": "CVE-2026-87491"}]}}})
     assert _summary([shodan, google])["cisa_kev_related"] == []
     # A product named as the target still counts.
-    jenkins = ("osint_cisa_kev_check", {"tool": "cisa_kev", "success": True, "software_matches": {
+    jenkins = ("cisa_kev_check", {"tool": "cisa_kev", "success": True, "software_matches": {
         "jenkins": {"most_recent": [{"cve_id": "CVE-2024-23897"}]}}})
     assert _summary([jenkins], target="jenkins")["cisa_kev_related"] == ["CVE-2024-23897"]
 
@@ -346,7 +346,7 @@ def test_markdown_sanitizer_is_fast_on_hostile_input():
 
 
 def test_key_facts_show_patch_status_and_newly_exploited_cves():
-    version = ("osint_version_specific_vulnerability_check", {
+    version = ("version_specific_vulnerability_check", {
         "tool": "version_check", "success": True, "software": "nginx", "version": "1.20.1",
         "security_status": "VULNERABLE", "affected_count": 3, "needs_review_count": 0, "ruled_out_count": 1,
         "patch_status_summary": {"fix_listed": 2, "no_fix_listed": 1}, "no_fix_listed_cves": ["CVE-2000-0002"],
@@ -363,7 +363,7 @@ def test_key_facts_show_patch_status_and_newly_exploited_cves():
 
 
 def test_no_newly_exploited_fact_without_recent_kev_entries():
-    nvd = ("osint_nvd_lookup", {"tool": "nvd", "success": True, "cve_id": "CVE-2021-44228", "severity": "CRITICAL",
+    nvd = ("nvd_lookup", {"tool": "nvd", "success": True, "cve_id": "CVE-2021-44228", "severity": "CRITICAL",
                                 "in_cisa_kev": True, "cisa_kev": {"days_in_kev": 1400, "recently_added_to_kev": False}})
     result = ai.AgentResult(target=ai.classify_target("CVE-2021-44228"), report="", complexity="Quick Scan",
                             model="m", tool_calls=[ai.ToolCallRecord(nvd[0], {}, 1, "t", 1, nvd[1])])
@@ -373,29 +373,29 @@ def test_no_newly_exploited_fact_without_recent_kev_entries():
 
 def test_keyless_baseline_lookups_do_not_use_the_tool_budget():
     client = FakeClient([_response(text="report")])
-    ai.run_osint_agent("8.8.8.8", ApiKeys(), "Quick Scan", client=client)
+    ai.run_agent("8.8.8.8", ApiKeys(), "Quick Scan", client=client)
     runner = ai._ToolRunner(ApiKeys(), ai.COMPLEXITY_PROFILES["Quick Scan"])
-    runner.run("osint_ip_owner", '{"ip_address": "8.8.8.8"}', iteration=0, free=True)
-    runner.run("osint_resolve_domain", '{"domain": "example.com"}', iteration=0)
+    runner.run("ip_owner", '{"ip_address": "8.8.8.8"}', iteration=0, free=True)
+    runner.run("resolve_domain", '{"domain": "example.com"}', iteration=0)
     assert runner.calls_remaining == ai.COMPLEXITY_PROFILES["Quick Scan"]["max_tool_calls"] - 1
 
 
 def test_new_tools_are_offered_to_the_model():
-    names = {t["function"]["name"] for t in ai.OSINT_TOOLS}
-    assert {"osint_distro_patch_check", "osint_ip_owner", "osint_threat_lists_check", "osint_subdomains"} <= names
+    names = {t["function"]["name"] for t in ai.AGENT_TOOLS}
+    assert {"distro_patch_check", "ip_owner", "threat_lists_check", "subdomains"} <= names
     assert names == set(ai.TOOL_FUNCTIONS)
     # The model can't pass internal limits through tool arguments.
-    assert ai._coerce_args("osint_subdomains", {"domain": "example.com", "limit": 10000}) == {"domain": "example.com"}
+    assert ai._coerce_args("subdomains", {"domain": "example.com", "limit": 10000}) == {"domain": "example.com"}
 
 
 def test_distro_backport_overrides_an_nvd_version_match():
     # NVD's upstream range says OpenSSH 8.9p1 is affected; Ubuntu's package already carries the fix.
-    version = ("osint_version_specific_vulnerability_check", {
+    version = ("version_specific_vulnerability_check", {
         "tool": "version_check", "success": True, "software": "OpenSSH", "version": "8.9p1",
         "affected_cves": [{"cve_id": "CVE-2024-6387", "severity": "HIGH", "in_cisa_kev": True},
                           {"cve_id": "CVE-2025-26465", "severity": "MEDIUM", "in_cisa_kev": True}],
         "affected_in_cisa_kev": ["CVE-2024-6387", "CVE-2025-26465"]})
-    distro = ("osint_distro_patch_check", {
+    distro = ("distro_patch_check", {
         "tool": "distro_patch_check", "success": True, "distro": "Ubuntu", "release": "22.04",
         "package": "openssh", "package_version": "8.9p1-3ubuntu0.10",
         "checked_cves": {"CVE-2024-6387": {}, "CVE-2025-26465": {}},
@@ -413,10 +413,10 @@ def test_distro_backport_overrides_an_nvd_version_match():
 
 
 def test_confirmed_kev_says_when_a_backport_could_not_be_checked():
-    shodan = ("osint_shodan_search", {"tool": "shodan", "success": True, "data_source": "Shodan InternetDB",
+    shodan = ("shodan_search", {"tool": "shodan", "success": True, "data_source": "Shodan InternetDB",
                                       "operating_system": "canonical ubuntu linux", "backport_note": "backports",
                                       "discovered_software": [{"name": "apache http server", "version": "2.4.7"}]})
-    version = ("osint_version_specific_vulnerability_check", {
+    version = ("version_specific_vulnerability_check", {
         "tool": "version_check", "success": True, "software": "apache http server", "version": "2.4.7",
         "affected_cves": [{"cve_id": "CVE-2021-40438", "severity": "CRITICAL", "in_cisa_kev": True,
                            "epss": {"epss": 0.9}}],
@@ -430,14 +430,14 @@ def test_confirmed_kev_says_when_a_backport_could_not_be_checked():
 
 
 def test_key_facts_show_package_advisories_exploits_and_sans():
-    version = ("osint_version_specific_vulnerability_check", {
+    version = ("version_specific_vulnerability_check", {
         "tool": "version_check", "success": True, "software": "Next.js", "version": "16.4.0",
         "security_status": "VULNERABLE", "affected_count": 1, "needs_review_count": 0, "ruled_out_count": 0,
         "package_advisories": {"package": "npm:next", "added": 1}, "no_candidates_note": "NVD has no CVEs recorded",
         "patch_status_summary": {"fix_listed": 1, "no_fix_listed": 0}, "no_fix_listed_cves": [],
         "affected_cves": [{"cve_id": "GHSA-673q-mjm6-r5xr", "severity": "CRITICAL", "fixed_in": "16.4.1",
                            "source": "GitHub Advisory via OSV.dev", "public_exploit": {"count": 2, "verified": True}}]})
-    lists = ("osint_threat_lists_check", {"tool": "threat_lists", "success": True, "spamhaus_drop": {"listed": False},
+    lists = ("threat_lists_check", {"tool": "threat_lists", "success": True, "spamhaus_drop": {"listed": False},
                                           "greynoise": {"error": "GreyNoise limit reached"},
                                           "sans_isc": {"meaning": "no attack reports from DShield sensors"}})
     result = ai.AgentResult(target=ai.classify_target("Next.js 16.4.0"), report="", complexity="Quick Scan", model="m",

@@ -85,7 +85,7 @@ def fake_agent(monkeypatch):
         return ai.AgentResult(target=ai.classify_target(target), report="## Executive Summary\nok",
                               complexity=complexity, model="m")
 
-    monkeypatch.setattr(ai, "run_osint_agent", fake_run)
+    monkeypatch.setattr(ai, "run_agent", fake_run)
     return runs
 
 
