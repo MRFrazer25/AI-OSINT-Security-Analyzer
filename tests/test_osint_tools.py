@@ -638,16 +638,6 @@ def test_ttl_cache_enforces_byte_budget():
     assert cache._bytes == 50
 
 
-def test_server_key_quota_enforces_total_and_per_client_caps():
-    quota = t.ServerKeyQuota()
-    assert quota.acquire("a", total_limit=2, client_limit=1) == 0
-    assert quota.acquire("a", total_limit=2, client_limit=1) >= 1  # same visitor
-    assert quota.acquire("b", total_limit=2, client_limit=1) == 0
-    assert quota.acquire("c", total_limit=2, client_limit=1) >= 1  # process-wide cap
-    quota.reset()
-    assert quota.acquire("c", total_limit=2, client_limit=1) == 0
-
-
 @pytest.mark.parametrize("value, expected", [
     ("nginx 1.20.1", ("nginx", "1.20.1")),
     ("Apache httpd 2.4.62", ("Apache httpd", "2.4.62")),
@@ -668,17 +658,6 @@ def test_software_parsing_is_fast_on_hostile_input():
     t.split_software_version("a" + " " * 20000 + "!")
     t.split_software_version("a\t9" + ".0" * 10000 + "!")
     assert time.perf_counter() - start < 1.0
-
-
-def test_server_key_quota_zero_limit_and_release():
-    quota = t.ServerKeyQuota()
-    assert quota.acquire("a", total_limit=0, client_limit=5) == float("inf")
-    assert quota.acquire("a", total_limit=5, client_limit=0) == float("inf")
-    assert quota.acquire("a", total_limit=1, client_limit=1) == 0
-    assert quota.acquire("b", total_limit=1, client_limit=1) >= 1
-    quota.release("a")
-    assert quota.acquire("b", total_limit=1, client_limit=1) == 0
-    quota.release("nobody")  # no-op
 
 
 def test_kev_entries_naming_only_the_vendor_match_by_vulnerability_name():

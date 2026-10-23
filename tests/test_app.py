@@ -4,8 +4,6 @@ from pathlib import Path
 
 import pytest
 
-import osint_tools as t
-
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
@@ -13,10 +11,8 @@ APP = str(Path(__file__).resolve().parent.parent / "app.py")
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for var in ("COHERE_API_KEY", "SHODAN_API_KEY", "VIRUSTOTAL_API_KEY", "VT_API_KEY", "ABUSEIPDB_API_KEY",
-                "NVD_API_KEY", "SHARE_SERVER_KEYS", "SERVER_KEY_RUNS_PER_HOUR", "SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR",
-                "TRUSTED_PROXY_HOPS"):
+                "NVD_API_KEY", "GREYNOISE_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    t.server_key_quota().reset()
 
 
 def _session():
@@ -93,77 +89,25 @@ def fake_agent(monkeypatch):
     return runs
 
 
-def test_server_keys_are_not_shared_unless_enabled(monkeypatch, fake_agent):
-    monkeypatch.setenv("COHERE_API_KEY", "server-key")
+def test_keys_on_the_server_are_never_used(monkeypatch, fake_agent):
+    # Keys in the environment, .env or Streamlit secrets must never run a visitor's analysis,
+    # even with the old sharing switch set.
+    for var in ("COHERE_API_KEY", "SHODAN_API_KEY", "VIRUSTOTAL_API_KEY", "ABUSEIPDB_API_KEY", "NVD_API_KEY"):
+        monkeypatch.setenv(var, "server-key")
+    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
     at = _session()
     _analyse(at)
     assert any("Cohere API key is required" in e.value for e in at.error)
     assert fake_agent == []
 
 
-def test_server_key_runs_are_limited_across_sessions(monkeypatch, fake_agent):
-    monkeypatch.setenv("COHERE_API_KEY", "server-key")
-    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
-    monkeypatch.setenv("SERVER_KEY_RUNS_PER_HOUR", "1")
-    monkeypatch.setenv("SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR", "1")
-    first, second = _session(), _session()  # separate browser sessions, so the per-session cooldown doesn't apply
-    _analyse(first)
-    assert len(fake_agent) == 1 and fake_agent[0].cohere == "server-key"
-    assert any("Security Report" in h.value for h in first.header)
-    _analyse(second)
-    assert len(fake_agent) == 1
-    assert any("hourly limit" in w.value for w in second.warning)
-
-
-def test_own_keys_bypass_the_server_key_limit(monkeypatch, fake_agent):
-    monkeypatch.setenv("SERVER_KEY_RUNS_PER_HOUR", "0")
+def test_keys_typed_into_the_session_are_used(monkeypatch, fake_agent):
+    monkeypatch.setenv("SHODAN_API_KEY", "server-key")
     at = _session()
     at.session_state["user_keys"] = {"cohere": "my-own-key"}
     _analyse(at)
     assert len(fake_agent) == 1 and fake_agent[0].cohere == "my-own-key"
-
-
-def test_shared_nvd_key_alone_does_not_use_the_quota(monkeypatch, fake_agent):
-    # A shared NVD key only raises NVD's rate limit; it must not block visitors who bring their own keys.
-    monkeypatch.setenv("NVD_API_KEY", "server-nvd")
-    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
-    monkeypatch.setenv("SERVER_KEY_RUNS_PER_HOUR", "0")
-    at = _session()
-    at.session_state["user_keys"] = {"cohere": "my-own-key"}
-    _analyse(at)
-    assert len(fake_agent) == 1 and fake_agent[0].nvd == "server-nvd"
-    assert not at.warning
-
-
-def test_zero_limit_switches_shared_keys_off(monkeypatch, fake_agent):
-    monkeypatch.setenv("COHERE_API_KEY", "server-key")
-    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
-    monkeypatch.setenv("SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR", "0")
-    at = _session()
-    _analyse(at)
-    assert fake_agent == []
-    assert any("doesn't allow analyses with its shared API keys" in w.value for w in at.warning)
-
-
-def test_runs_that_fail_before_any_lookup_do_not_use_the_quota(monkeypatch):
-    import ai
-
-    calls = []
-
-    def failing_run(target, keys, complexity, on_event=None, model=None):
-        calls.append(target)
-        result = ai.AgentResult(target=ai.classify_target(target), report="", complexity=complexity, model="m")
-        result.error = "Cohere rejected the API key."
-        return result
-
-    monkeypatch.setattr(ai, "run_osint_agent", failing_run)
-    monkeypatch.setenv("COHERE_API_KEY", "revoked-key")
-    monkeypatch.setenv("SHARE_SERVER_KEYS", "true")
-    monkeypatch.setenv("SERVER_KEY_RUNS_PER_HOUR", "1")
-    first, second = _session(), _session()
-    _analyse(first)
-    _analyse(second)
-    assert len(calls) == 2  # the failed first run gave its slot back
+    assert fake_agent[0].shodan == ""  # the server's key isn't filled in either
 
 
 def test_optional_keys_are_not_shown_as_missing(app):

@@ -58,8 +58,6 @@ All of these offer free tiers. Check each provider for its current limits. Free 
 * Shodan's InternetDB and CVEDB are free for non-commercial use only.
 * Spamhaus DROP is free, but [Spamhaus must be credited](https://www.spamhaus.org/drop/terms/) when it's used in a product.
 
-If you deploy your own copy, keep `SHARE_SERVER_KEYS` off (the default) so visitors can't use your keys.
-
 This product uses data from the NVD API but is not endorsed or certified by the NVD.
 
 Spamhaus DROP data is (c) The Spamhaus Project.
@@ -76,7 +74,7 @@ cd AI-OSINT-Security-Analyzer
 python setup_check.py
 ```
 
-`setup_check.py` installs or upgrades the requirements, verifies the imports, creates `.env` from `.env.example`, and prints where to get each key. Get a [Cohere key](https://dashboard.cohere.com/api-keys) (required) plus any optional keys from the table above. Add them to `.env`, or enter them in the web UI. Then start the app:
+`setup_check.py` installs or upgrades the requirements, verifies the imports, creates `.env` from `.env.example`, and prints where to get each key. Get a [Cohere key](https://dashboard.cohere.com/api-keys) (required) plus any optional keys from the table above. Enter them in the app under API Keys Configuration: they're kept for that browser session only and never saved to disk. Then start the app:
 
 ```bash
 python -m streamlit run app.py
@@ -103,20 +101,7 @@ pip install pytest
 python -m pytest
 ```
 
-The tests run offline. They cover target validation, version comparison (including trailing zeros such as `2.4` vs `2.4.0`), NVD range matching, minimum safe versions, KEV and keyword matching, Markdown sanitising and export escaping, NVD cache/rate-limit behaviour, shared-key quotas, and the agent loop (using a fake Cohere client). Many are regression tests built from real analysis runs.
-
-### Sharing server keys on a deployment
-
-Keys in `.env` or Streamlit secrets stay on the server. Visitors can only use them if you turn sharing on, and then hourly caps apply:
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `SHARE_SERVER_KEYS` | `false` | Set `true` to let visitors use the server's keys, up to the hourly caps below. |
-| `SERVER_KEY_RUNS_PER_HOUR` | `20` | Process-wide analyses that may consume the server's keys. `0` switches shared-key analyses off. |
-| `SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR` | `5` | Per-visitor cap (best-effort client address; the process-wide cap is the real guard). `0` switches shared-key analyses off. |
-| `TRUSTED_PROXY_HOPS` | `0` | Number of proxies you run in front of the app. When set, the visitor's address is read from `X-Forwarded-For`; otherwise that header is ignored, because clients can forge it. |
-
-These apply only when an analysis uses a server-provided Cohere, Shodan, VirusTotal or AbuseIPDB key. A shared NVD key doesn't count (it only raises NVD's rate limit), and a visitor who enters their own keys isn't counted. Analyses that fail before making any lookup give their slot back. There is still a 15-second per-session cooldown between runs. The same names can be set in `.streamlit/secrets.toml`.
+The tests run offline. They cover target validation, version comparison (including trailing zeros such as `2.4` vs `2.4.0`), NVD range matching, minimum safe versions, KEV and keyword matching, Markdown sanitising and export escaping, NVD cache/rate-limit behaviour, keys staying per session, and the agent loop (using a fake Cohere client). Many are regression tests built from real analysis runs.
 
 ## How it works
 
@@ -128,7 +113,7 @@ These apply only when an analysis uses a server-provided Cohere, Shodan, VirusTo
 
 ## Security and privacy
 
-* **Per-session API keys:** keys entered in the UI live only in that user's Streamlit session. They are never written to environment variables or disk, and never shared between users of a deployment. Keys configured on the server are never sent to the browser, and are not used unless `SHARE_SERVER_KEYS=true`. When sharing is on, hourly caps stop one visitor from draining the operator's quota.
+* **Per-session API keys:** keys entered in the UI live only in that user's Streamlit session. They are never written to environment variables or disk, and never shared between users of a deployment. The app never uses keys from `.env`, environment variables or Streamlit secrets, so whoever hosts it can't have their keys used by visitors, and each visitor's analyses run only on the keys they entered.
 * **Safe rendering:** the report includes third-party text (banners, descriptions), so it is rendered as Markdown only. Raw HTML is not rendered. Remaining `[`, `]` and `<` in the model's write-up are escaped so reference images, hidden links and HTML cannot survive, and third-party software names in the Markdown export are escaped the same way as on screen.
 * **Prompt-injection hardening:** tool output is treated as untrusted data and kept inside escaped data blocks. Results are size-capped before they reach the model, and the model can't override server-side limits through tool arguments.
 * **Input validation:** CVE IDs, domains and IPs are validated before any API call, and query parameters are URL-encoded.

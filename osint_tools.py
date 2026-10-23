@@ -15,7 +15,6 @@ import io
 import ipaddress
 import json
 import logging
-import os
 import re
 import socket
 import threading
@@ -79,17 +78,6 @@ class ApiKeys:
     abuseipdb: str = ""
     nvd: str = ""
     greynoise: str = ""
-
-    @classmethod
-    def from_env(cls) -> ApiKeys:
-        return cls(
-            cohere=os.getenv("COHERE_API_KEY", ""),
-            shodan=os.getenv("SHODAN_API_KEY", ""),
-            virustotal=os.getenv("VIRUSTOTAL_API_KEY", "") or os.getenv("VT_API_KEY", ""),
-            abuseipdb=os.getenv("ABUSEIPDB_API_KEY", ""),
-            nvd=os.getenv("NVD_API_KEY", ""),
-            greynoise=os.getenv("GREYNOISE_API_KEY", ""),
-        )
 
     def with_overrides(self, **overrides: str) -> ApiKeys:
         """Return a copy where any non-empty override replaces the current value."""
@@ -186,60 +174,6 @@ _osv_cache = _TTLCache(ttl_seconds=6 * 3600, maxsize=64, max_bytes=16 * 1024 * 1
 # NVD allows 5 requests per 30 s without a key (per IP) and 50 with one.
 _nvd_keyless_limiter = _RateLimiter(max_calls=5, period=30.0)
 _nvd_keyed_limiter = _RateLimiter(max_calls=50, period=30.0)
-# Analyses that consume the operator's keys, shared by every Streamlit session in this process.
-SERVER_KEY_WINDOW_SECONDS = 3600
-
-
-class ServerKeyQuota:
-    """Sliding-window count of analyses that use the server's keys."""
-
-    def __init__(self) -> None:
-        self._runs: deque = deque()  # (start time, client)
-        self._lock = threading.Lock()
-
-    def reset(self) -> None:
-        with self._lock:
-            self._runs.clear()
-
-    def acquire(self, client: str, total_limit: int, client_limit: int) -> float:
-        """Record a run and return 0, or return the seconds until one is allowed.
-
-        A limit of 0 means shared-key analyses are switched off, and returns infinity rather than a
-        wait that would never end.
-        """
-        if total_limit <= 0 or client_limit <= 0:
-            return float("inf")
-        with self._lock:
-            now = time.monotonic()
-            while self._runs and now - self._runs[0][0] >= SERVER_KEY_WINDOW_SECONDS:
-                self._runs.popleft()
-            mine = [started for started, who in self._runs if who == client]
-            if len(self._runs) >= total_limit:
-                oldest = self._runs[0][0] if self._runs else now
-            elif len(mine) >= client_limit:
-                oldest = mine[0] if mine else now
-            else:
-                self._runs.append((now, client))
-                return 0.0
-            return max(1.0, SERVER_KEY_WINDOW_SECONDS - (now - oldest))
-
-    def release(self, client: str) -> None:
-        """Give back this client's most recent run (for analyses that failed before using any shared key)."""
-        with self._lock:
-            for i in range(len(self._runs) - 1, -1, -1):
-                if self._runs[i][1] == client:
-                    del self._runs[i]
-                    return
-
-
-_server_key_quota = ServerKeyQuota()
-
-
-def server_key_quota() -> ServerKeyQuota:
-    """Process-wide bucket. Lives on this imported module so Streamlit reruns and AppTest sessions share it."""
-    return _server_key_quota
-
-
 class SourceError(Exception):
     """A data source could not be reached or returned an unusable response."""
 

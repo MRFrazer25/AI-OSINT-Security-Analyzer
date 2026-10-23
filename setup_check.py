@@ -61,7 +61,7 @@ def ensure_env_file() -> None:
         print("\n.env already exists")
     elif example.exists():
         shutil.copyfile(example, env)
-        print("\nCreated .env from .env.example. Add your API keys to it.")
+        print("\nCreated .env from .env.example (optional settings only; API keys are entered in the app).")
 
 
 def main() -> None:
@@ -71,7 +71,7 @@ def main() -> None:
     ensure_env_file()
     from osint_tools import KEY_SIGNUP_URLS
 
-    print("\nGet your API keys here (Cohere is required, the rest are optional):")
+    print("\nGet your API keys here, then enter them in the app (Cohere is required, the rest are optional):")
     for name, url in KEY_SIGNUP_URLS.items():
         print(f"  {name:<11} {url}")
     print("\nSetup complete. Start the app with:\n  python -m streamlit run app.py")

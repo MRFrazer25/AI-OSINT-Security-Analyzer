@@ -17,8 +17,7 @@
     }
   },
   "updateContentCommand": "pip3 install --user -r requirements.txt",
-  // A visitor can type a Cohere key in the app. To share one server key instead, add
-  // COHERE_API_KEY and SHARE_SERVER_KEYS=true as Codespaces secrets and keep the port private.
+  // Enter your API keys in the app: they stay in your browser session, and keys set as secrets aren't used.
   "postAttachCommand": {
     "server": "streamlit run app.py"
   },

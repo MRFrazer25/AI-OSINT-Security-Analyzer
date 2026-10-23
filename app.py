@@ -2,23 +2,22 @@
 
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime
 
 import streamlit as st
 
-from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_markdown_export, build_report_data,
-                escape_markdown, run_osint_agent, sanitize_report_markdown)
-from osint_tools import KEY_SIGNUP_URLS, ApiKeys, classify_target, server_key_quota
-
-try:
+try:  # before importing ai, so COHERE_MODEL in .env sets the default model (API keys are never read from it)
     from dotenv import load_dotenv
 
     load_dotenv()
 except ImportError:
     pass
+
+from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_markdown_export, build_report_data,
+                escape_markdown, run_osint_agent, sanitize_report_markdown)
+from osint_tools import KEY_SIGNUP_URLS, ApiKeys, classify_target
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -51,61 +50,10 @@ TOOL_LABELS = {
 }
 
 
-def setting(name: str, default: str = "") -> str:
-    """Operator setting from Streamlit secrets, falling back to the environment / .env."""
-    try:
-        value = str(st.secrets.get(name, ""))
-    except Exception:  # no secrets.toml
-        value = ""
-    return value or os.getenv(name, default)
-
-
-def int_setting(name: str, default: int) -> int:
-    try:
-        return max(0, int(setting(name, str(default))))
-    except ValueError:
-        return default
-
-
-def server_key_limits() -> tuple[int, int]:
-    """(analyses per hour for all visitors, per visitor) that may use the server's keys."""
-    return int_setting("SERVER_KEY_RUNS_PER_HOUR", 20), int_setting("SERVER_KEY_RUNS_PER_CLIENT_PER_HOUR", 5)
-
-
-def server_keys() -> ApiKeys:
-    """Keys configured by whoever runs the app (.env, environment, or Streamlit secrets).
-
-    They are used only when SHARE_SERVER_KEYS is true. Otherwise every visitor brings their own keys.
-    """
-    if setting("SHARE_SERVER_KEYS", "false").strip().lower() not in ("true", "1", "yes", "on"):
-        return ApiKeys()
-    return ApiKeys.from_env().with_overrides(**{name: setting(env) for name, (_, env, _, _) in KEY_FIELDS.items()})
-
-
-# Keys whose use costs the operator quota or money. A shared NVD key only raises NVD's rate limit,
-# so it doesn't count toward the shared-key quota.
-QUOTA_KEYS = ("cohere", "shodan", "virustotal", "abuseipdb", "greynoise")
-
-
-def client_id() -> str:
-    """Best-effort visitor address for the per-client limit (the process-wide limit is the real guard).
-
-    X-Forwarded-For is client-controlled unless a proxy you run rewrites it, so it is only read when the
-    operator sets TRUSTED_PROXY_HOPS to the number of proxies in front of the app. Each proxy appends the
-    address it saw, so the client is that many entries from the end.
-    """
-    address = st.context.ip_address or ""
-    hops = int_setting("TRUSTED_PROXY_HOPS", 0)
-    if hops:
-        forwarded = [a.strip() for a in (st.context.headers.get("X-Forwarded-For") or "").split(",") if a.strip()]
-        if len(forwarded) >= hops:
-            address = forwarded[-hops]
-    return address or "local"
-
-
 def effective_keys() -> ApiKeys:
-    """Session keys typed by this user take precedence over server keys. Nothing is written to os.environ."""
-    return server_keys().with_overrides(**st.session_state.user_keys)
+    """Only the keys this visitor typed into their own session. Keys in .env, the environment or Streamlit
+    secrets are never used, so one person's keys can't run another person's analysis."""
+    return ApiKeys().with_overrides(**st.session_state.user_keys)
 
 
 def key_link(name: str) -> str:
@@ -188,7 +136,6 @@ Without a Shodan key, Shodan's free [InternetDB](https://internetdb.shodan.io/) 
                "(c) The Spamhaus Project. SANS ISC data is CC BY-NC-SA 4.0.")
 
 # --- API keys ---------------------------------------------------------------
-server = server_keys()
 with st.expander("API Keys Configuration", expanded=not effective_keys().cohere):
     st.markdown("**Get your keys (all have free tiers):**  \n" + "  \n".join(
         f"- {key_link(n)}: {'required' if req else 'optional'}, {purpose}"
@@ -198,21 +145,12 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
         "Keys you enter are kept only in this browser session's server-side memory. They are never written "
         "to disk or shared with other users, and they are cleared when the session ends."
     )
-    if any(getattr(server, n) for n in QUOTA_KEYS):
-        total_limit, client_limit = server_key_limits()
-        if total_limit and client_limit:
-            st.caption(f"Keys provided by this deployment are shared by all visitors and limited to {total_limit} "
-                       f"analyses per hour ({client_limit} per visitor). Add your own keys to avoid the limit.")
-        else:
-            st.caption("Analyses with this deployment's keys are switched off. Add your own keys to run one.")
     with st.form("api_keys_form", clear_on_submit=True):
         cols = st.columns(2)
         entered = {}
         for i, (name, (service, _, purpose, required)) in enumerate(KEY_FIELDS.items()):
             if st.session_state.user_keys.get(name):
                 placeholder = "Saved for this session (leave blank to keep)"
-            elif getattr(server, name):
-                placeholder = "Provided by server config (leave blank to use it)"
             else:
                 placeholder = "Required" if required else "Optional"
             entered[name] = cols[i % 2].text_input(
@@ -275,8 +213,6 @@ if run_clicked:
     target = classify_target(target_input)
     keys = effective_keys()
     wait = RUN_COOLDOWN_SECONDS - (time.time() - st.session_state.last_run)
-    uses_server_keys = any(getattr(server, n) and not st.session_state.user_keys.get(n) for n in QUOTA_KEYS)
-    visitor = client_id()
     if target.type == "invalid":
         st.error(target.error)
     elif not keys.cohere:
@@ -284,13 +220,6 @@ if run_clicked:
                  "then add it under API Keys Configuration.")
     elif wait > 0:
         st.warning(f"Please wait {int(wait) + 1}s before starting another analysis.")
-    elif uses_server_keys and (quota_wait := server_key_quota().acquire(visitor, *server_key_limits())):
-        if quota_wait == float("inf"):
-            st.warning("This deployment doesn't allow analyses with its shared API keys. "
-                       "Add your own keys under API Keys Configuration.")
-        else:
-            st.warning(f"This deployment's shared API keys have reached their hourly limit. Try again in about "
-                       f"{int(quota_wait // 60) + 1} min, or add your own keys under API Keys Configuration.")
     else:
         st.session_state.last_run = time.time()
         missing = [key_link(n) for n in ("virustotal", "abuseipdb") if not getattr(keys, n)]
@@ -318,9 +247,6 @@ if run_clicked:
                     status.write("Writing the final report...")
 
             result = run_osint_agent(target.value, keys, complexity_level, on_event=on_event, model=model_choice)
-            if uses_server_keys and result.error and not result.tool_calls:
-                # Failed before any lookup (e.g. the Cohere key was rejected): don't charge the shared quota.
-                server_key_quota().release(visitor)
             if result.error:
                 status.update(label=f"Analysis finished with an error: {escape_markdown(result.error)}",
                               state="error")
