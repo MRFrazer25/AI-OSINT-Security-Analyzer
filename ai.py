@@ -319,8 +319,11 @@ def escape_markdown(text: Any) -> str:
 
 
 NVD_CVE_PAGE = "https://nvd.nist.gov/vuln/detail/"
-# A CVE ID in escaped Markdown ("CVE-2021-44228" or "CVE\-2021\-44228"), but not inside a URL, word or code span.
-_CVE_MENTION = re.compile(r"(?<![\w/\\`=?&#.-])CVE(\\?-)(1999|20\d{2})\1(\d{4,7})(?![\w`-])", re.IGNORECASE)
+# A CVE ID in escaped Markdown ("CVE-2021-44228" or "CVE\-2021\-44228"), but not inside a URL or word, and not
+# after "!", which would make the link an image the browser loads by itself.
+_CVE_MENTION = re.compile(r"(?<![\w/\\`=?&#.!-])CVE(\\?-)(1999|20\d{2})\1(\d{4,7})(?![\w`-])", re.IGNORECASE)
+# Inline code spans, left as they are. Bounded, so matching stays linear on hostile input.
+_CODE_SPAN = re.compile(r"(``[^\n]{0,500}?``|`[^`\n]{0,500}`)")
 
 
 def link_cves(markdown: str) -> str:
@@ -329,7 +332,18 @@ def link_cves(markdown: str) -> str:
     The link is built here from the ID's digits alone, so neither the model nor third-party text can choose
     where it points; links they write are still shown as plain text by sanitize_report_markdown.
     """
-    return _CVE_MENTION.sub(lambda m: f"[{m.group(0)}]({NVD_CVE_PAGE}CVE-{m.group(2)}-{m.group(3)})", markdown)
+    def link(m: re.Match) -> str:
+        return f"[{m.group(0)}]({NVD_CVE_PAGE}CVE-{m.group(2)}-{m.group(3)})"
+
+    lines, fenced = [], False
+    for line in markdown.split("\n"):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced:
+            # Odd parts are code spans, where a link would show as raw text.
+            line = "".join(p if i % 2 else _CVE_MENTION.sub(link, p) for i, p in enumerate(_CODE_SPAN.split(line)))
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _message_text(message: Any) -> str:
@@ -1016,7 +1030,7 @@ def build_cve_table(data: Dict[str, Any]) -> Dict[str, Any]:
         for severity, count in (r.get("affected_by_severity") or {}).items():
             by_severity[str(severity).upper()] += int(count)
         for v in r.get("affected_cves") or []:
-            cve_id = v.get("cve_id")
+            cve_id = str(v.get("cve_id") or "").strip().upper()
             if not cve_id or not is_valid_cve(cve_id) or cve_id in backported or cve_id in rows:
                 continue
             epss = (v.get("epss") or {}).get("epss")

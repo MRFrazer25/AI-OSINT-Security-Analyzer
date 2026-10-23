@@ -999,9 +999,17 @@ def test_junk_and_misleading_input_is_refused_before_any_lookup(monkeypatch):
     monkeypatch.setattr(t, "_nvd_most_recent", no_network)
     assert t.classify_target("CVE-0000-0000").type == "invalid"  # CVE IDs began in 1999
     assert t.classify_target("CVE-1999-0001").type == "cve"
-    assert "isn't a version number" in t.version_specific_vulnerability_check("nginx", version="../../")["error"]
     assert "too long" in t.version_specific_vulnerability_check("nginx", version="1" * 500)["error"]
     assert "only symbols" in t.cve_search("*")["error"]
+    assert t.classify_target("CVE-2021-44228\n").type == "cve" and not t.CVE_RE.match("CVE-2021-44228\n")
+
+
+def test_a_version_that_isnt_a_number_falls_back_to_general_cves(monkeypatch):
+    monkeypatch.setattr(t, "_resolve_products", lambda name, keys: [("f5", "nginx")])
+    monkeypatch.setattr(t, "_nvd_most_recent", lambda params, keys, limit: (0, []))
+    r = t.version_specific_vulnerability_check("nginx", version="latest")
+    assert r["security_status"] == "UNKNOWN_VERSION" and r["note"].startswith("'latest' isn't a version number")
+    assert t.cisa_kev_check(software_list=["*"])["error"]  # symbols only: nothing to look up
 
 
 def test_kev_product_names_are_capped_and_symbol_only_names_dropped(monkeypatch):

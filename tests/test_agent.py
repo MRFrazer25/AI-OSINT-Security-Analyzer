@@ -521,5 +521,9 @@ def test_cve_ids_are_linked_to_nvd_by_code_only():
     # A link the model wrote stays plain text; only the ID itself gets the NVD link.
     report = ai.link_cves(ai.sanitize_report_markdown("[CVE-2021-1234](https://evil.example/x)"))
     assert report == "[CVE-2021-1234](https://nvd.nist.gov/vuln/detail/CVE-2021-1234) (https://evil.example/x)"
-    for text in ("https://evil.example/?q=CVE-2021-1234", "`CVE-2021-1234`", "CVE-0000-0000", "XCVE-2021-1234"):
-        assert ai.link_cves(text) == text
+    for text in ("https://evil.example/?q=CVE-2021-1234", "`CVE-2021-1234`", "CVE-0000-0000", "XCVE-2021-1234",
+                 "!CVE-2021-1234", "``a CVE-2021-1234 b``", "```\nCVE-2021-1234\n```"):
+        assert ai.link_cves(text) == text  # never an image ("!"), never inside code
+    assert ai.link_cves("`x` CVE-2021-1234") == "`x` [CVE-2021-1234](https://nvd.nist.gov/vuln/detail/CVE-2021-1234)"
+    hostile = "x " + "`" * 20000 + " CVE-2021-1234"  # many code-span starts: still quick, ID still linked
+    assert ai.link_cves(hostile).endswith("(https://nvd.nist.gov/vuln/detail/CVE-2021-1234)")

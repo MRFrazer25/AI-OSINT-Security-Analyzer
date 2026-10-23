@@ -211,7 +211,7 @@ def _http_get(url: str, *, params: Optional[dict] = None, headers: Optional[dict
 # Target classification and validation
 # ---------------------------------------------------------------------------
 
-CVE_RE = re.compile(r"^CVE-(?:1999|20\d{2})-\d{4,}$", re.IGNORECASE)  # the first CVE IDs are from 1999
+CVE_RE = re.compile(r"^CVE-(?:1999|20\d{2})-\d{4,}\Z", re.IGNORECASE)  # the first CVE IDs are from 1999
 DOMAIN_RE = re.compile(
     r"^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$",
     re.IGNORECASE,
@@ -2209,7 +2209,7 @@ def cve_search(search_term: str, keys: Optional[ApiKeys] = None, result_limit: i
     term = " ".join((search_term or "").split())[:100]
     if not term:
         return {"tool": "cve_search", "error": "search_term is required"}
-    if not re.search(r"[a-z0-9]", term, re.IGNORECASE):
+    if not re.search(r"[^\W_]", term):
         return {"tool": "cve_search", "error": "search_term needs a product, vendor or keyword, not only symbols"}
     if is_valid_cve(term):
         return nvd_lookup(term, keys)
@@ -2259,7 +2259,7 @@ def cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
     ids = list(dict.fromkeys(ids))[:50]
     invalid = [c for c in ids if not is_valid_cve(c)]
     ids = [c for c in ids if is_valid_cve(c)]
-    software = [s.strip()[:80] for s in as_list(software_list) if s and re.search(r"[a-z0-9]", s, re.IGNORECASE)][:20]
+    software = [s.strip()[:80] for s in as_list(software_list) if s and re.search(r"[^\W_]", s)][:20]
     if not ids and not software:
         return {"tool": "cisa_kev", "error": "Provide cve_ids and/or software_list"}
     try:
@@ -2309,8 +2309,7 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
         return {"tool": "version_check", "error": "software_name is required"}
     given = str(version).strip() if version is not None else ""
     version = extract_version(given) if given.lower() not in ("unknown", "none", "n/a", "") else None
-    if given and version is None and given.lower() not in ("unknown", "none", "n/a"):
-        return {"tool": "version_check", "error": f"{given[:40]!r} isn't a version number (e.g. 1.20.1)."}
+    ignored = given[:40] if given and version is None and given.lower() not in ("unknown", "none", "n/a") else None
     if version and len(version) > MAX_VERSION_LENGTH:
         return {"tool": "version_check", "error": f"Version is too long (max {MAX_VERSION_LENGTH} characters)."}
 
@@ -2339,7 +2338,9 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
             "security_status": "UNKNOWN_VERSION",
             "total_cves_for_product": total,
             "most_recent_cves": vulns,
-            "note": "No version supplied: these are the product's most recent CVEs, not confirmed to affect it.",
+            "note": ((f"{ignored!r} isn't a version number, so it was ignored. " if ignored
+                      else "No version supplied: ") + "these are the product's most recent CVEs, not confirmed to "
+                     "affect it."),
         }
 
     affected, not_affected, unanalyzed = [], [], []
