@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from functools import cmp_to_key
 from itertools import zip_longest
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 import shodan
@@ -33,6 +33,8 @@ import shodan
 logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 20
+MAX_REDIRECTS = 3
+MAX_RESPONSE_BYTES = 64 * 2**20  # the largest real one, Exploit-DB's CSV, is about 10 MB
 USER_AGENT = "ai-vulnerability-exposure-analyzer/2.0 (+https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer)"
 MAX_TARGET_LENGTH = 253
 MAX_VERSION_LENGTH = 40  # real versions are far shorter
@@ -191,10 +193,7 @@ def _http_get(url: str, *, params: Optional[dict] = None, headers: Optional[dict
     last_error = ""
     for attempt in range(retries + 1):
         try:
-            if json_body is not None:
-                resp = requests.post(url, json=json_body, headers=merged_headers, timeout=timeout)
-            else:
-                resp = requests.get(url, params=params, headers=merged_headers, timeout=timeout)
+            resp = _send(url, params, merged_headers, timeout, json_body)
         except requests.RequestException as exc:
             last_error = type(exc).__name__
             time.sleep(1.5 * (attempt + 1))
@@ -205,6 +204,55 @@ def _http_get(url: str, *, params: Optional[dict] = None, headers: Optional[dict
             continue
         return resp
     raise SourceError(f"network error contacting {urlsplit(url).netloc}: {last_error}")
+
+
+def _send(url: str, params: Optional[dict], headers: Dict[str, str], timeout: float,
+          json_body: Optional[dict]) -> requests.Response:
+    """One request, following redirects by hand and reading at most MAX_RESPONSE_BYTES.
+
+    requests drops only the Authorization header when a redirect changes host, so the keys these sources send in
+    their own headers (NVD's apiKey, VirusTotal's x-apikey, AbuseIPDB's Key) would go to wherever a redirect
+    points. Here a redirect must stay on https and off private addresses, and only User-Agent and Accept follow
+    it to another host.
+    """
+    for _ in range(MAX_REDIRECTS + 1):
+        if json_body is not None:
+            resp = requests.post(url, json=json_body, headers=headers, timeout=timeout, allow_redirects=False,
+                                 stream=True)
+        else:
+            resp = requests.get(url, params=params, headers=headers, timeout=timeout, allow_redirects=False,
+                                stream=True)
+        if not resp.is_redirect:
+            break
+        target = urljoin(resp.url, resp.headers["Location"])
+        resp.close()
+        if json_body is not None:
+            raise SourceError(f"{urlsplit(url).netloc} redirected a query, which isn't followed")
+        _check_redirect(target)
+        if urlsplit(target).hostname != urlsplit(url).hostname:
+            headers = {k: v for k, v in headers.items() if k in ("User-Agent", "Accept")}
+        url, params = target, None  # the query is already part of the Location URL
+    else:
+        raise SourceError(f"too many redirects from {urlsplit(url).netloc}")
+    body = bytearray()
+    for chunk in resp.iter_content(64 * 1024):  # counted after decompression, so a gzip bomb stops here too
+        body += chunk
+        if len(body) > MAX_RESPONSE_BYTES:
+            resp.close()
+            raise SourceError(f"response from {urlsplit(url).netloc} is over {MAX_RESPONSE_BYTES // 2**20} MB")
+    resp._content = bytes(body)  # what .json() and .text read
+    return resp
+
+
+def _check_redirect(target: str) -> None:
+    parts = urlsplit(target)
+    if parts.scheme != "https" or not parts.hostname:
+        raise SourceError(f"refused a redirect to a non-https address ({parts.scheme or 'none'})")
+    try:
+        if not ipaddress.ip_address(parts.hostname).is_global:
+            raise SourceError("refused a redirect to a private address")
+    except ValueError:
+        pass  # a host name, not an IP address
 
 
 # ---------------------------------------------------------------------------

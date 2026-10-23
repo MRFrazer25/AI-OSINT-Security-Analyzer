@@ -1031,3 +1031,48 @@ def test_a_version_newer_than_any_in_nvd_is_not_called_a_numbering_mismatch(monk
     assert r["security_status"] == "NO_KNOWN_VULNERABILITIES"
     assert "newer than every version their records name (newest: 1.29.2)" in r["no_candidates_note"]
     assert "typed correctly" in r["no_candidates_note"]
+
+
+class _Wire:
+    """A fake streamed response for _send."""
+
+    def __init__(self, url, status=200, location=None, body=b"{}"):
+        self.url, self.status_code, self.headers, self._body = url, status, {}, body
+        if location:
+            self.headers["Location"] = location
+        self.is_redirect = location is not None
+
+    def iter_content(self, size):
+        for i in range(0, len(self._body), size):
+            yield self._body[i:i + size]
+
+    def close(self):
+        pass
+
+
+def test_api_keys_do_not_follow_a_redirect_to_another_host(monkeypatch):
+    sent = []
+    hops = {"https://api.example/x": _Wire("https://api.example/x", 302, "https://other.example/y"),
+            "https://other.example/y": _Wire("https://other.example/y", body=b'{"ok": 1}')}
+    monkeypatch.setattr(t.requests, "get", lambda url, headers, **k: sent.append((url, dict(headers))) or hops[url])
+    resp = t._http_get("https://api.example/x", headers={"x-apikey": "secret"})
+    assert resp._content == b'{"ok": 1}'  # the body .json() reads
+    assert sent[0][1]["x-apikey"] == "secret" and "x-apikey" not in sent[1][1]
+
+
+@pytest.mark.parametrize("location", ["http://other.example/", "https://169.254.169.254/latest", "https://[::1]/",
+                                      "file:///etc/passwd"])
+def test_redirects_to_plain_http_or_private_addresses_are_refused(monkeypatch, location):
+    monkeypatch.setattr(t.requests, "get", lambda url, **k: _Wire(url, 301, location))
+    with pytest.raises(t.SourceError, match="refused a redirect"):
+        t._http_get("https://api.example/x")
+
+
+def test_redirect_loops_and_oversized_responses_are_cut_off(monkeypatch):
+    monkeypatch.setattr(t.requests, "get", lambda url, **k: _Wire(url, 302, url))
+    with pytest.raises(t.SourceError, match="too many redirects"):
+        t._http_get("https://api.example/x")
+    monkeypatch.setattr(t, "MAX_RESPONSE_BYTES", 1000)
+    monkeypatch.setattr(t.requests, "get", lambda url, **k: _Wire(url, body=b"x" * 5000))
+    with pytest.raises(t.SourceError, match="is over"):
+        t._http_get("https://api.example/x")

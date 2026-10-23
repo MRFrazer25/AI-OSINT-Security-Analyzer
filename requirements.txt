@@ -6,5 +6,7 @@ requests==2.34.2
 python-dotenv==1.2.4
 # Pulled in by Streamlit; pinned so the fix for CVE-2026-96636, CVE-2026-96644 and CVE-2026-96778 is used.
 pillow==13.0.0
+# Pulled in by cohere and shodan; pinned for its security fixes
+filelock==4.2.1
 # Charts (installed with Streamlit; pinned because the app imports it)
 altair==6.3.0
