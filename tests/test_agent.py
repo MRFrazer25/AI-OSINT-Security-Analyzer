@@ -427,3 +427,25 @@ def test_confirmed_kev_says_when_a_backport_could_not_be_checked():
     assert "may have backported the fix, which wasn't checked" in facts["CISA KEV: confirmed for this target"]
     assert "backports fixes" in facts["Operating system (Shodan InternetDB)"]
     assert facts["Sources checked"].endswith("CISA KEV, FIRST EPSS")
+
+
+def test_key_facts_show_package_advisories_exploits_and_sans():
+    version = ("osint_version_specific_vulnerability_check", {
+        "tool": "version_check", "success": True, "software": "Next.js", "version": "16.4.0",
+        "security_status": "VULNERABLE", "affected_count": 1, "needs_review_count": 0, "ruled_out_count": 0,
+        "package_advisories": {"package": "npm:next", "added": 1}, "no_candidates_note": "NVD has no CVEs recorded",
+        "patch_status_summary": {"fix_listed": 1, "no_fix_listed": 0}, "no_fix_listed_cves": [],
+        "affected_cves": [{"cve_id": "GHSA-673q-mjm6-r5xr", "severity": "CRITICAL", "fixed_in": "16.4.1",
+                           "source": "GitHub Advisory via OSV.dev", "public_exploit": {"count": 2, "verified": True}}]})
+    lists = ("osint_threat_lists_check", {"tool": "threat_lists", "success": True, "spamhaus_drop": {"listed": False},
+                                          "greynoise": {"error": "GreyNoise limit reached"},
+                                          "sans_isc": {"meaning": "no attack reports from DShield sensors"}})
+    result = ai.AgentResult(target=ai.classify_target("Next.js 16.4.0"), report="", complexity="Quick Scan", model="m",
+                             tool_calls=[ai.ToolCallRecord(n, {}, 1, "t", 1, r) for n, r in (version, lists)])
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert "Next.js 16.4.0 (NVD and package advisories)" in facts
+    assert facts["Package advisories NVD doesn't have yet: Next.js 16.4.0"].startswith("GHSA-673q-mjm6-r5xr (CRITICAL")
+    assert not any(label.startswith("NVD coverage") for label in facts)
+    assert facts["Public exploit code (Exploit-DB)"] == "GHSA-673q-mjm6-r5xr (2 published, verified)"
+    assert facts["SANS ISC (DShield)"] == "no attack reports from DShield sensors"
+    assert "SANS ISC" in facts["Sources checked"] and "GitHub Advisory (OSV)" in facts["Sources checked"]

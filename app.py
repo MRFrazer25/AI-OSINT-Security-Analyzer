@@ -175,13 +175,17 @@ Include a version for software. Without one, results are generic.
 - Internet registries (RDAP): who owns an IP's network
 - [Spamhaus DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/) and [GreyNoise](https://www.greynoise.io/): hijacked networks and internet scanners
 - [crt.sh](https://crt.sh/) and [Cert Spotter](https://sslmate.com/ct_search_api/): subdomains from certificate logs
+- [SANS ISC](https://isc.sans.edu/): attack reports when GreyNoise can't answer
+- [Exploit-DB](https://www.exploit-db.com/): published exploit code
+- [GitHub Advisory Database](https://github.com/advisories): package advisories before NVD has them
 
 Without a Shodan key, Shodan's free [InternetDB](https://internetdb.shodan.io/) is used (ports and software, no banners).
 """
     )
     st.caption("This product uses data from the NVD API but is not endorsed or certified by the NVD. "
                "Not affiliated with or endorsed by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA, FIRST, "
-               "Spamhaus, GreyNoise or the internet registries. Spamhaus DROP data (c) The Spamhaus Project.")
+               "Spamhaus, GreyNoise, SANS, Exploit-DB, GitHub or the internet registries. Spamhaus DROP data "
+               "(c) The Spamhaus Project. SANS ISC data is CC BY-NC-SA 4.0.")
 
 # --- API keys ---------------------------------------------------------------
 server = server_keys()

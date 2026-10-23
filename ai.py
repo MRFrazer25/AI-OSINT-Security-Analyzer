@@ -160,6 +160,9 @@ Rules:
 - Give each AFFECTED CVE's patch_status. "NVD lists no fixed version" does not mean no patch exists: say to check the vendor advisory, and never write "no patch available" unless a source says so.
 - CVEs with recently_added_to_kev were added to CISA KEV in the last 30 days: call them out as newly exploited, with days_in_kev.
 - Needs Review can include recent CVEs NVD hasn't analysed yet (reason "not analysed by NVD yet"). List them, quote what their description says about versions, and say NVD hasn't confirmed them. description_covers_this_version means the CVE's own text names a range that includes this version. If a version check has no_candidates_note, never call the version safe: say NVD has no records yet and to check the vendor's advisories.
+- CVEs with source "GitHub Advisory via OSV.dev" are matched to this exact version by the package's own advisory (GitHub's database usually has new advisories before NVD). Treat them as confirmed, cite the advisory_id, and say they aren't in NVD yet when cve_id is a GHSA ID.
+- public_exploit means exploit code is published on Exploit-DB ("verified" means Exploit-DB tested it). Raise its priority, but never claim a CVE has no public exploit just because the flag is missing.
+- sans_isc (SANS Internet Storm Center) is used when GreyNoise can't answer. Its sensors log all traffic they see, so busy legitimate services such as public DNS resolvers build up reports; weigh it with the network owner. Credit SANS ISC when you cite it.
 - Counts such as affected_count and open_in_package_count cover every CVE, but lists can be shortened (lists_shortened, open_in_package_shown). Say how many are listed out of the total instead of implying the list is complete.
 - Call tools only with real names from the evidence (e.g. "Dahua Rtsp Server", "nginx"); never placeholders like "all" or "unknown".
 - Exposure is a finding in itself. Internet-facing cameras/DVRs/NVRs, IoT devices, remote-admin or management interfaces (RDP, VNC, Telnet, SSH, SMB, databases, vendor protocols such as Dahua 37777/Hikvision 8000) and login pages raise risk even with a clean reputation and no version-confirmed CVE. Rate overall risk on exposure plus exploit history, not only on confirmed CVEs.
@@ -682,6 +685,9 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
                 add("GreyNoise", gn["meaning"] + (f" ({gn['name']})" if gn.get("name") else ""))
             elif gn.get("error"):
                 add("GreyNoise", gn["error"] if gn["error"].startswith("not checked") else f"not checked: {gn['error']}")
+            isc = r.get("sans_isc") or {}
+            if isc.get("meaning") or isc.get("error"):
+                add("SANS ISC (DShield)", isc.get("meaning") or f"not checked: {isc['error']}")
         elif tool == "subdomains":
             add(f"Subdomains of {r['domain']} (certificate logs)",
                 f"{r.get('count', 0)} found via {r.get('source')}"
@@ -713,23 +719,30 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
                              f"in {r['report_window_days']} days ({r['threat_level']})")
         elif tool == "version_check" and r.get("version"):
             top = ", ".join(f"{v['cve_id']} ({v['severity']})" for v in r.get("affected_cves", [])[:3])
-            add(f"{r['software']} {r['version']} (NVD)",
+            advised = bool((r.get("package_advisories") or {}).get("added"))
+            add(f"{r['software']} {r['version']} (" + ("NVD and package advisories" if advised else "NVD") + ")",
                 f"{r['security_status']}: {r['affected_count']} affected, {r['needs_review_count']} need review, "
                 f"{r['ruled_out_count']} ruled out" + (f". Top: {top}" if top else ""))
             patch = r.get("patch_status_summary")
             if isinstance(patch, dict) and r.get("affected_count"):
                 no_fix = r.get("no_fix_listed_cves") or []
                 add(f"Patch status: {r['software']} {r['version']}",
-                    f"{patch.get('fix_listed', 0)} of {r['affected_count']} affected CVEs have a fixed version in NVD"
+                    f"{patch.get('fix_listed', 0)} of {r['affected_count']} affected CVEs have a fixed version "
+                    + ("listed in NVD or the package advisory" if advised else "in NVD")
                     + (f"; {len(no_fix)} list no fixed version, so upgrading may not cover them (check the vendor "
                        f"advisory): {', '.join(no_fix[:5])}" if no_fix else ""))
+            from_advisories = [v for v in r.get("affected_cves", []) or [] if v.get("source", "").startswith("GitHub Advisory")]
+            if from_advisories:
+                add(f"Package advisories NVD doesn't have yet: {r['software']} {r['version']}",
+                    ", ".join(f"{v['cve_id']} ({v['severity']}" + (f", fixed in {v['fixed_in']}" if v.get("fixed_in") else "")
+                              + ")" for v in from_advisories[:6]))
             recent = [v for v in r.get("needs_review_cves", []) or [] if "not analysed by NVD yet" in str(v.get("reason"))]
             if recent:
                 add(f"Recent CVEs NVD hasn't analysed yet: {r['software']} {r['version']}",
                     ", ".join(f"{v['cve_id']}" + (" (its description says this version is affected)"
                                                   if v.get("description_covers_this_version") else "") for v in recent[:6])
                     + (f" and {r['needs_review_count'] - len(recent)} more" if r.get("needs_review_count", 0) > len(recent) else ""))
-            if r.get("no_candidates_note") and not recent:
+            if r.get("no_candidates_note") and not recent and not advised:
                 add(f"NVD coverage: {r['software']} {r['version']}", r["no_candidates_note"])
             upgrade = r.get("upgrade_to_at_least")
             if isinstance(upgrade, dict) and upgrade.get("text"):
@@ -772,6 +785,20 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
                 kev_lines.setdefault(e["cve_id"], f"{e['cve_id']}{_fmt_epss(e)}")
                 note_recent(e)
 
+    exploits: Dict[str, Dict[str, Any]] = {}
+    for rec in result.tool_calls:
+        if rec.status != "success":
+            continue
+        entries = list(rec.result.get("affected_cves", []) or []) + list(rec.result.get("open_in_package", []) or [])
+        if rec.result.get("tool") == "nvd" and rec.result.get("cve_id") in relevant_cves:
+            entries.append(rec.result)
+        for e in entries:
+            if isinstance(e.get("public_exploit"), dict) and e.get("cve_id"):
+                exploits.setdefault(e["cve_id"], e["public_exploit"])
+    if exploits:
+        add("Public exploit code (Exploit-DB)", ", ".join(
+            f"{c} ({x.get('count')} published" + (", verified" if x.get("verified") else "") + ")"
+            for c, x in list(exploits.items())[:8]))
     confirmed = [kev_lines.get(c, c) for c in summary["cisa_kev_confirmed"]]
     related = [kev_lines.get(c, c) for c in summary["cisa_kev_related"]]
     backport_unchecked = not has_distro_check and any(
@@ -798,7 +825,8 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
         elif tool == "nvd" and rec.result.get("data_source"):
             ran.setdefault("cvedb", "Shodan CVEDB (NVD unavailable)")
         elif tool == "threat_lists":
-            parts = [name for key, name in (("spamhaus_drop", "Spamhaus DROP"), ("greynoise", "GreyNoise"))
+            parts = [name for key, name in (("spamhaus_drop", "Spamhaus DROP"), ("greynoise", "GreyNoise"),
+                                            ("sans_isc", "SANS ISC"))
                      if "error" not in (rec.result.get(key) or {"error": 1})]
             if parts:
                 ran[tool] = ", ".join(parts)
@@ -811,6 +839,10 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
         ran.setdefault("kev", "CISA KEV")
     if any(_has_key(rec.result, ("epss",)) for rec in result.tool_calls if rec.status == "success"):
         ran.setdefault("epss", "FIRST EPSS")
+    if any(_has_key(rec.result, ("public_exploit",)) for rec in result.tool_calls if rec.status == "success"):
+        ran.setdefault("exploitdb", "Exploit-DB")
+    if any(rec.result.get("package_advisories") for rec in result.tool_calls if rec.status == "success"):
+        ran.setdefault("osv_packages", "GitHub Advisory (OSV)")
     add("Sources checked", ", ".join(dict.fromkeys(ran.values())) or "none")
     if result.target.type in ("ip", "domain"):
         missing = []

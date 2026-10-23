@@ -860,3 +860,49 @@ def test_shodan_versions_drop_line_breaks(monkeypatch):
     monkeypatch.setattr(t, "kev_matches_for_software", lambda names: {})
     services = t.osint_shodan_search("45.33.32.156", t.ApiKeys(shodan="k"))["services"]
     assert [s["version"] for s in services] == ["6.6.1p1 Ubuntu 2ubuntu2.13", "2.4.7"]
+
+
+def test_exploitdb_index_maps_cves_to_published_exploits(monkeypatch):
+    csv_text = ("id,file,description,date_published,author,type,platform,port,date_added,date_updated,verified,codes,tags\n"
+                '34777,x,"Bash - Shellshock",2014-09-25,a,remote,linux,,2014-09-25,2014-09-25,1,CVE-2014-6271;OSVDB-1,\n'
+                '50592,y,"Log4Shell",2021-12-14,b,remote,java,,2021-12-14,2021-12-14,0,CVE-2021-44228,\n')
+    monkeypatch.setattr(t, "_exploitdb_cache", t._TTLCache(60))
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: _TextResp(200, csv_text))
+    index = t._exploitdb_index()
+    assert index["CVE-2014-6271"] == [("34777", True)] and index["CVE-2021-44228"] == [("50592", False)]
+
+
+def test_sans_isc_answers_when_greynoise_cannot(monkeypatch):
+    monkeypatch.setattr(t, "_drop_cache", t._TTLCache(60))
+    isc = {"ip": {"count": 12, "attacks": 3, "maxdate": "2026-10-20", "mindate": "2026-10-01",
+                  "threatfeeds": {"ciarmy": {}, "blocklistde": {}}}}
+
+    def fake_get(url, **k):
+        if "spamhaus" in url:
+            return _TextResp(200, DROP_V4)
+        if "greynoise" in url:
+            return _Resp(429, {})
+        return _Resp(200, isc)
+    monkeypatch.setattr(t, "_http_get", fake_get)
+    r = t.osint_threat_lists_check("8.8.8.8")
+    assert "10 lookups a day" in r["greynoise"]["error"]
+    assert r["sans_isc"]["reports"] == 12 and "blocklistde" in r["sans_isc"]["meaning"]
+    assert "legitimate services" in r["sans_isc"]["meaning"]
+
+
+def test_package_advisories_add_what_nvd_lacks_and_rule_out_the_rest(monkeypatch):
+    # Real gap: Next.js 16.4.0's October 2026 RCE advisories were on GitHub but not in NVD.
+    affecting = {"vulns": [{"id": "GHSA-673q-mjm6-r5xr", "aliases": [], "published": "2026-10-22T00:00:00Z",
+                            "summary": "Next.js: Unauthenticated RCE in use cache",
+                            "database_specific": {"severity": "CRITICAL"},
+                            "affected": [{"package": {"name": "next", "ecosystem": "npm"},
+                                          "ranges": [{"type": "SEMVER", "events": [{"introduced": "16.0.0"},
+                                                                                   {"fixed": "16.4.1"}]}]}]}]}
+    every = {"vulns": affecting["vulns"] + [{"id": "GHSA-old", "aliases": ["CVE-2026-75604"]}]}
+    monkeypatch.setattr(t, "_http_get", lambda url, json_body=None, **k: _Resp(200, affecting if "version" in json_body
+                                                                                 else every))
+    ref, advisories, known = t._package_advisories([("*", "next.js")], "16.4.0")
+    assert ref == "npm:next" and advisories[0]["cve_id"] == "GHSA-673q-mjm6-r5xr"
+    assert advisories[0]["fixed_in"] == "16.4.1" and advisories[0]["severity"] == "CRITICAL"
+    assert "CVE-2026-75604" in known
+    assert t._package_advisories([("f5", "nginx")], "1.20.1") == (None, [], set())

@@ -46,6 +46,9 @@ Private, loopback, link-local, CGNAT and other non-public addresses are rejected
 | [Spamhaus DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/) | Hijacked or criminal networks | Not needed (downloaded at most once a day, as Spamhaus asks) | n/a |
 | [crt.sh](https://crt.sh/), [Cert Spotter](https://sslmate.com/ct_search_api/) | Subdomains from certificate transparency logs | Not needed | n/a |
 | [Shodan InternetDB](https://internetdb.shodan.io/), [Shodan CVEDB](https://cvedb.shodan.io/) | Ports and software without a Shodan key; CVE details when NVD is down | Not needed (free for non-commercial use) | n/a |
+| [SANS ISC](https://isc.sans.edu/) (DShield) | Attack reports for an IP when GreyNoise can't answer | Not needed (data is CC BY-NC-SA 4.0, non-commercial) | n/a |
+| [Exploit-DB](https://www.exploit-db.com/) | Whether exploit code is published for a CVE | Not needed (index downloaded at most once a day) | n/a |
+| [GitHub Advisory Database](https://github.com/advisories) via OSV.dev | Advisories for packages such as Next.js, React and Django before NVD has them | Not needed | n/a |
 
 All of these offer free tiers. Check each provider for its current limits. Free tiers that matter here:
 
@@ -132,7 +135,7 @@ These apply only when an analysis uses a server-provided Cohere, Shodan, VirusTo
 * **Key redaction:** error messages are scrubbed of API key values.
 * **No telemetry:** Streamlit usage stats are disabled, stack traces are hidden from visitors, and analysed targets are not written to server logs.
 
-**What leaves your machine:** the target and the gathered evidence are sent to Cohere to produce the report. The target is also looked up at whichever sources apply: Shodan, VirusTotal, AbuseIPDB, NVD, FIRST, GreyNoise, the internet registries, OSV.dev, and crt.sh or Cert Spotter. CISA's KEV catalog and Spamhaus DROP are downloaded whole, so no target is sent to them. Each lookup is subject to that provider's privacy policy, and each provider also sees the requesting IP address: Shodan, NIST, CISA and FIRST say they log details such as the IP and time of each request. With a Cohere trial key, Cohere may use the target and evidence, de-identified, for research. Don't submit targets you need to keep confidential.
+**What leaves your machine:** the target and the gathered evidence are sent to Cohere to produce the report. The target is also looked up at whichever sources apply: Shodan, VirusTotal, AbuseIPDB, NVD, FIRST, GreyNoise or SANS ISC, the internet registries, OSV.dev, and crt.sh or Cert Spotter. CISA's KEV catalog, Spamhaus DROP and the Exploit-DB index are downloaded whole, so no target is sent to them. Each lookup is subject to that provider's privacy policy, and each provider also sees the requesting IP address: Shodan, NIST, CISA and FIRST say they log details such as the IP and time of each request. With a Cohere trial key, Cohere may use the target and evidence, de-identified, for research. Don't submit targets you need to keep confidential.
 
 Exported reports can contain sensitive findings. Handle them accordingly.
 

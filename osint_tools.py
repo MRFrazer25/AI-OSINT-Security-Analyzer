@@ -10,6 +10,8 @@ users of a shared deployment never see or use each other's keys.
 
 from __future__ import annotations
 
+import csv
+import io
 import ipaddress
 import json
 import logging
@@ -44,6 +46,8 @@ CVEDB_URL = "https://cvedb.shodan.io/cve"
 GREYNOISE_COMMUNITY_URL = "https://api.greynoise.io/v3/community"
 SPAMHAUS_DROP_URLS = {4: "https://www.spamhaus.org/drop/drop_v4.json", 6: "https://www.spamhaus.org/drop/drop_v6.json"}
 CRTSH_URL = "https://crt.sh/"
+SANS_ISC_URL = "https://isc.sans.edu/api/ip"
+EXPLOITDB_CSV_URL = "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv"
 CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
 # IANA's official lists of which regional internet registry serves each address block over RDAP.
 RDAP_BOOTSTRAP_URLS = {4: "https://data.iana.org/rdap/ipv4.json", 6: "https://data.iana.org/rdap/ipv6.json"}
@@ -171,6 +175,8 @@ _nvd_cache = _TTLCache(ttl_seconds=3600, maxsize=512, max_bytes=32 * 1024 * 1024
 _epss_cache = _TTLCache(ttl_seconds=12 * 3600, maxsize=5000)
 _kev_cache = _TTLCache(ttl_seconds=6 * 3600, maxsize=1)
 _rdap_bootstrap_cache = _TTLCache(ttl_seconds=24 * 3600, maxsize=2)
+# Exploit-DB's index of published exploits is a 10 MB CSV; once a day is plenty.
+_exploitdb_cache = _TTLCache(ttl_seconds=24 * 3600, maxsize=1)
 # Spamhaus asks for automated downloads of DROP no more than once a day.
 _drop_cache = _TTLCache(ttl_seconds=24 * 3600, maxsize=2)
 # One distro package's OSV records are about 1 MB raw; they're summarised first, then bounded here.
@@ -971,10 +977,47 @@ def epss_lookup_many(cve_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     return result
 
 
+def _exploitdb_index() -> Dict[str, List[Tuple[str, bool]]]:
+    """CVE -> [(Exploit-DB id, verified)] from Exploit-DB's published index."""
+    cached = _exploitdb_cache.get("index")
+    if cached is not None:
+        return cached
+    resp = _http_get(EXPLOITDB_CSV_URL, headers={"Accept": "text/csv, text/plain"}, timeout=60, retries=1)
+    if resp.status_code != 200:
+        raise SourceError(f"Exploit-DB index returned HTTP {resp.status_code}")
+    index: Dict[str, List[Tuple[str, bool]]] = {}
+    for row in csv.DictReader(io.StringIO(resp.text)):
+        for code in (row.get("codes") or "").split(";"):
+            code = code.strip().upper()
+            if CVE_RE.match(code):
+                index.setdefault(code, []).append((str(row.get("id") or ""), row.get("verified") == "1"))
+    if not index:
+        raise SourceError("Exploit-DB index had no CVE references")
+    _exploitdb_cache.set("index", index)
+    return index
+
+
+def exploit_lookup_many(cve_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    """Published exploit code on Exploit-DB for any of ``cve_ids`` (empty dict if the index is unavailable)."""
+    try:
+        index = _exploitdb_index()
+    except (SourceError, csv.Error) as exc:
+        logger.warning("Exploit-DB enrichment skipped: %s", exc)
+        return {}
+    found = {}
+    for cve in {c.upper() for c in cve_ids if c}:
+        if cve in index:
+            entries = index[cve]
+            found[cve] = {"exploit_db_ids": [i for i, _ in entries][:5], "count": len(entries),
+                          "verified": any(v for _, v in entries)}
+    return found
+
+
 def _enrich_with_exploit_intel(vulns: List[Dict[str, Any]]) -> None:
     ids = [v["cve_id"] for v in vulns if v.get("cve_id")]
     kev = kev_lookup_many(ids)
     epss = epss_lookup_many(ids)
+    exploits = exploit_lookup_many(ids)
     for v in vulns:
         cve_id = (v.get("cve_id") or "").upper()
         if cve_id in kev:
@@ -989,6 +1032,8 @@ def _enrich_with_exploit_intel(vulns: List[Dict[str, Any]]) -> None:
             v.update(kev_age(v["kev_date_added"]))
         if cve_id in epss:
             v["epss"] = epss[cve_id]
+        if cve_id in exploits:
+            v["public_exploit"] = exploits[cve_id]
 
 
 # ---------------------------------------------------------------------------
@@ -1789,6 +1834,33 @@ def _greynoise(ip: str, keys: ApiKeys) -> Dict[str, Any]:
             "last_seen": data.get("last_seen"), "meaning": meaning}
 
 
+def _sans_isc(ip: str) -> Dict[str, Any]:
+    """SANS Internet Storm Center (DShield): attack reports from its sensors. Free and keyless, but the data is
+    CC BY-NC-SA 4.0 (non-commercial), and SANS asks clients to pause 5 minutes after a 429."""
+    resp = _http_get(f"{SANS_ISC_URL}/{ip}?json", retries=0)
+    if resp.status_code == 429:
+        raise SourceError("SANS ISC is busy and asks clients to wait 5 minutes")
+    if resp.status_code != 200:
+        raise SourceError(f"SANS ISC returned HTTP {resp.status_code}")
+    try:
+        data = resp.json().get("ip") or {}
+    except (ValueError, AttributeError) as exc:
+        raise SourceError("SANS ISC returned an unexpected response") from exc
+    reports, attacks = data.get("count") or 0, data.get("attacks") or 0
+    feeds = sorted(str(k) for k in (data.get("threatfeeds") or {}))
+    if reports or attacks:
+        # Sensors log every packet they see, so busy legitimate services (public DNS, CDNs) build up reports too.
+        meaning = (f"seen by DShield sensors: {reports} reports and {attacks} attacks, last seen "
+                   f"{data.get('maxdate') or 'unknown'} (sensors also log legitimate services such as public DNS)")
+    else:
+        meaning = "no attack reports from DShield sensors"
+    return {"reports": reports, "attacks": attacks, "first_seen": data.get("mindate"),
+            "last_seen": data.get("maxdate"), "threat_feeds": feeds[:10],
+            "comment": _clean_banner(str(data.get("comment") or ""), 120) or None,
+            "meaning": meaning + (f"; listed in threat feeds: {', '.join(feeds[:5])}" if feeds else ""),
+            "credit": "SANS Internet Storm Center (DShield), CC BY-NC-SA 4.0"}
+
+
 def osint_threat_lists_check(ip_address: str, keys: Optional[ApiKeys] = None) -> Dict[str, Any]:
     """Keyless reputation: Spamhaus DROP (criminal or hijacked networks) and GreyNoise (internet scanners)."""
     ok, err = validate_public_ip(ip_address or "")
@@ -1819,9 +1891,14 @@ def osint_threat_lists_check(ip_address: str, keys: Optional[ApiKeys] = None) ->
             result["greynoise"] = _greynoise(str(ip_obj), keys)
         except SourceError as exc:
             result["greynoise"] = {"error": redact(str(exc), keys)}
-    if all("error" in result[k] for k in ("spamhaus_drop", "greynoise")):
-        return {"tool": "threat_lists", "error": f"Spamhaus DROP: {result['spamhaus_drop']['error']}; "
-                                                 f"GreyNoise: {result['greynoise']['error']}"}
+    if "error" in result["greynoise"]:  # daily limit, IPv6 or an outage: ask SANS ISC instead
+        try:
+            result["sans_isc"] = _sans_isc(str(ip_obj))
+        except SourceError as exc:
+            result["sans_isc"] = {"error": str(exc)}
+    sources = [k for k in ("spamhaus_drop", "greynoise", "sans_isc") if k in result]
+    if all("error" in result[k] for k in sources):
+        return {"tool": "threat_lists", "error": "; ".join(f"{k}: {result[k]['error']}" for k in sources)}
     return result
 
 
@@ -2085,6 +2162,9 @@ def osint_nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limi
     epss = epss_lookup_many([cve_id]).get(cve_id)
     if epss:
         summary["epss"] = epss
+    exploit = exploit_lookup_many([cve_id]).get(cve_id)
+    if exploit:
+        summary["public_exploit"] = exploit
     return {"tool": "nvd", "success": True, **summary}
 
 
@@ -2253,6 +2333,21 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
     except SourceError as exc:
         return {"tool": "version_check", "error": str(exc)}
 
+    # Package advisories first: they confirm CVEs NVD hasn't analysed and add ones it doesn't have at all.
+    package_ref, advisories_added, package_error, package_ids = None, 0, None, set()
+    try:
+        package_ref, advisories, package_ids = _package_advisories(products, version)
+    except (SourceError, ValueError, AttributeError) as exc:
+        advisories, package_error = [], str(exc)
+    for adv in advisories:
+        known = {v["cve_id"] for v in affected} | {v["cve_id"] for v in not_affected}
+        if adv["cve_id"] in known:
+            continue  # NVD already judged it for this version
+        unanalyzed[:] = [v for v in unanalyzed if v["cve_id"] != adv["cve_id"]]
+        affected.append(adv)
+        seen.add(adv["cve_id"])
+        advisories_added += 1
+
     recent_checked = True
     try:
         for cve in _recent_unanalyzed_cves(name, products, keys, seen):
@@ -2277,15 +2372,28 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
     except SourceError:
         recent_checked = False
 
+    # A needs-review CVE the package's advisories cover, but not at this version, is ruled out by them.
+    affecting = {a["cve_id"] for a in advisories}
+    for v in list(unanalyzed):
+        if v["cve_id"] in package_ids and v["cve_id"] not in affecting:
+            unanalyzed.remove(v)
+            not_affected.append({**v, "status": "NOT_AFFECTED",
+                                 "reason": f"The {package_ref} advisory doesn't list this version as affected",
+                                 "affected_ranges": [f"see the {package_ref} advisory"]})
+
+    def score(v: Dict[str, Any]) -> float:
+        # Advisory-only entries have a severity but no computed CVSS score; rank them by severity.
+        return v.get("cvss_score") or {"CRITICAL": 9.5, "HIGH": 7.5, "MEDIUM": 5.0, "LOW": 2.0}.get(v.get("severity"), 0.0)
+
     def sort_key(v: Dict[str, Any]) -> Tuple[float, str]:
-        return (v.get("cvss_score") or 0.0, v.get("published") or "")
+        return (score(v), v.get("published") or "")
 
     affected.sort(key=sort_key, reverse=True)
     unanalyzed.sort(key=sort_key, reverse=True)
     _enrich_with_exploit_intel(affected + unanalyzed)
     # Exploited in the wild first, then most likely to be exploited (EPSS), then by CVSS.
     affected.sort(key=lambda v: (bool(v.get("in_cisa_kev")), (v.get("epss") or {}).get("epss") or 0.0,
-                                 v.get("cvss_score") or 0.0), reverse=True)
+                                 score(v)), reverse=True)
     no_fix = [v["cve_id"] for v in affected if not (v.get("fixed_in") or v.get("fixed_after"))]
 
     if affected:
@@ -2318,6 +2426,10 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
         "affected_cves": affected[:result_limit],
         "needs_review_count": len(unanalyzed),
         "needs_review_cves": unanalyzed[: max(3, result_limit // 2)],
+        **({"package_advisories": {"package": package_ref, "added": advisories_added,
+                                   "source": "GitHub Advisory Database via OSV.dev"}} if package_ref else {}),
+        **({"package_advisories_note": f"The package advisory check failed ({package_error})."}
+           if package_error else {}),
         "lists_shortened": {k: v for k, v in (
             ("affected_cves", f"showing {min(len(affected), result_limit)} of {len(affected)}"
              if len(affected) > result_limit else None),
@@ -2344,6 +2456,76 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
             "Some CVEs only apply with specific modules, configurations, or platforms.",
         ],
     }
+
+
+# NVD products that are also packages, mapped to their OSV ecosystem and package name. GitHub's advisory
+# database (served through OSV) usually has new advisories for these hours or days before NVD analyses them.
+_PACKAGE_ECOSYSTEMS = {
+    "next.js": ("npm", "next"), "react": ("npm", "react"), "express": ("npm", "express"),
+    "lodash": ("npm", "lodash"), "axios": ("npm", "axios"), "jquery": ("npm", "jquery"),
+    "django": ("PyPI", "django"), "flask": ("PyPI", "flask"), "requests": ("PyPI", "requests"),
+    "log4j": ("Maven", "org.apache.logging.log4j:log4j-core"),
+    "spring_framework": ("Maven", "org.springframework:spring-core"), "rails": ("RubyGems", "rails"),
+}
+_ADVISORY_SEVERITY = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MODERATE": "MEDIUM", "MEDIUM": "MEDIUM", "LOW": "LOW"}
+
+
+def _package_known_ids(ecosystem: str, package: str) -> set:
+    """Every CVE and advisory ID OSV has for a package, at any version."""
+    ids: set = set()
+    body: Dict[str, Any] = {"package": {"name": package, "ecosystem": ecosystem}}
+    for _ in range(5):
+        resp = _http_get(OSV_QUERY_URL, json_body=body, timeout=30)
+        if resp.status_code != 200:
+            raise SourceError(f"OSV.dev returned HTTP {resp.status_code}")
+        data = resp.json()
+        for vuln in data.get("vulns", []) or []:
+            ids.add(str(vuln.get("id")).upper())
+            ids.update(str(a).upper() for a in vuln.get("aliases") or [])
+        if not data.get("next_page_token"):
+            break
+        body = {**body, "page_token": data["next_page_token"]}
+    return ids
+
+
+def _package_advisories(products: List[Tuple[str, str]], version: str) -> Tuple[Optional[str], List[Dict[str, Any]], set]:
+    """("ecosystem:package", advisories OSV says affect this exact version, every ID OSV has for the package),
+    for products that are packages."""
+    for _, product in products:
+        if product not in _PACKAGE_ECOSYSTEMS:
+            continue
+        ecosystem, package = _PACKAGE_ECOSYSTEMS[product]
+        resp = _http_get(OSV_QUERY_URL, json_body={"package": {"name": package, "ecosystem": ecosystem},
+                                                   "version": version}, timeout=30)
+        if resp.status_code != 200:
+            raise SourceError(f"OSV.dev returned HTTP {resp.status_code}")
+        try:
+            vulns = resp.json().get("vulns", []) or []
+        except (ValueError, AttributeError) as exc:
+            raise SourceError("OSV.dev returned invalid JSON") from exc
+        advisories = []
+        for vuln in vulns:
+            cve = next((a.upper() for a in vuln.get("aliases") or [] if is_valid_cve(a)), None)
+            fixes = [e["fixed"] for a in vuln.get("affected", []) or []
+                     if (a.get("package") or {}).get("name") == package
+                     for r in a.get("ranges", []) or [] for e in r.get("events", []) or [] if e.get("fixed")]
+            later = sorted((f for f in fixes if compare_versions(f, version) > 0), key=_version_tokens)
+            severity = _ADVISORY_SEVERITY.get(str((vuln.get("database_specific") or {}).get("severity", "")).upper(),
+                                              "UNKNOWN")
+            entry = {
+                "cve_id": cve or vuln.get("id"), "advisory_id": vuln.get("id"), "status": "AFFECTED",
+                "source": "GitHub Advisory via OSV.dev", "severity": severity, "cvss_score": None,
+                "cvss_vector": next((x.get("score") for x in vuln.get("severity", []) or []), None),
+                "published": (vuln.get("published") or "")[:10],
+                "description": _clean_banner(str(vuln.get("summary") or vuln.get("details") or ""), 300),
+                "matched_range": f"{ecosystem} {package} " + (f"before {later[0]}" if later else "(no fix listed)"),
+            }
+            if later:
+                entry["fixed_in"] = later[0]
+            entry["patch_status"] = patch_status(entry).replace("per NVD", "per the advisory")
+            advisories.append(entry)
+        return f"{ecosystem}:{package}", advisories, _package_known_ids(ecosystem, package)
+    return None, [], set()
 
 
 _UNANALYZED_STATUSES = {"Received", "Awaiting Analysis", "Undergoing Analysis"}
