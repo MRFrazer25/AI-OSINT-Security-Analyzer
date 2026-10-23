@@ -135,7 +135,7 @@ def test_report_markdown_is_sanitized():
         "![x](http://evil.example/p.png) [docs](https://nvd.nist.gov) [bad](javascript:alert(1)) cost $5"
     )
     assert "evil.example" not in text and "image removed" in text
-    assert "docs (https://nvd.nist.gov)" in text
+    assert "docs (`https://nvd.nist.gov`)" in text
     assert "javascript" not in text
     assert r"\$5" in text
 
@@ -181,7 +181,7 @@ def test_report_sanitizer_drops_cohere_citation_tags():
 def test_report_sanitizer_keeps_safe_formatting():
     report = "## Summary\n**High** risk\n\n| Finding | Severity |\n|---|---|\n| Open RDP | HIGH |\n- item"
     assert ai.sanitize_report_markdown(report) == report
-    assert ai.sanitize_report_markdown("see [https://nvd.nist.gov](https://nvd.nist.gov)") == "see https://nvd.nist.gov"
+    assert ai.sanitize_report_markdown("see [https://nvd.nist.gov](https://nvd.nist.gov)") == "see `https://nvd.nist.gov`"
     assert ai.sanitize_report_markdown(r"already \[escaped\]") == r"already \[escaped\]"
 
 
@@ -199,7 +199,10 @@ def test_markdown_export_escapes_banner_derived_software_names():
 
 
 def test_escape_markdown_neutralizes_formatting():
-    assert ai.escape_markdown("![a](http://x)") == r"\!\[a\]\(http://x\)"
+    assert ai.escape_markdown("![a](http://x)") == r"\!\[a\]\(`http://x`\)"
+    # URLs become code, since Streamlit links them even when escaped; ':' blocks its colour shortcodes.
+    assert ai.escape_markdown(":red[hi] https://evil.example.") == r"\:red\[hi\] `https://evil.example`\."
+    assert ai.escape_markdown("www.evil.example<img src=x>") == r"`www.evil.example`\<img src=x\>"
 
 
 def test_falls_back_when_default_model_is_rejected():
@@ -520,10 +523,17 @@ def test_cve_ids_are_linked_to_nvd_by_code_only():
     assert ai.link_cves(escaped) == f"[{escaped}](https://nvd.nist.gov/vuln/detail/CVE-2021-44228)"
     # A link the model wrote stays plain text; only the ID itself gets the NVD link.
     report = ai.link_cves(ai.sanitize_report_markdown("[CVE-2021-1234](https://evil.example/x)"))
-    assert report == "[CVE-2021-1234](https://nvd.nist.gov/vuln/detail/CVE-2021-1234) (https://evil.example/x)"
+    assert report == "[CVE-2021-1234](https://nvd.nist.gov/vuln/detail/CVE-2021-1234) (`https://evil.example/x`)"
     for text in ("https://evil.example/?q=CVE-2021-1234", "`CVE-2021-1234`", "CVE-0000-0000", "XCVE-2021-1234",
                  "!CVE-2021-1234", "``a CVE-2021-1234 b``", "```\nCVE-2021-1234\n```"):
         assert ai.link_cves(text) == text  # never an image ("!"), never inside code
     assert ai.link_cves("`x` CVE-2021-1234") == "`x` [CVE-2021-1234](https://nvd.nist.gov/vuln/detail/CVE-2021-1234)"
     hostile = "x " + "`" * 20000 + " CVE-2021-1234"  # many code-span starts: still quick, ID still linked
     assert ai.link_cves(hostile).endswith("(https://nvd.nist.gov/vuln/detail/CVE-2021-1234)")
+
+
+def test_urls_in_the_report_are_shown_but_not_clickable():
+    text = ai.sanitize_report_markdown("Go to https://evil.example/login. Or www.evil.example, or `https://x.example`.")
+    assert text == "Go to `https://evil.example/login`. Or `www.evil.example`, or `https://x.example`."
+    assert ai.sanitize_report_markdown("```\nhttps://evil.example\n```") == "```\nhttps://evil.example\n```"
+    assert ai.sanitize_report_markdown("mail abuse@example.com") == "mail abuse@example.com"

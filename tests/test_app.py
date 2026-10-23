@@ -137,3 +137,10 @@ def test_report_shows_the_confirmed_cve_table_and_chart(monkeypatch):
     _analyse(at, "nginx 1.20.1")
     assert any("Confirmed vulnerabilities" in m.value for m in at.markdown)
     assert at.dataframe and list(at.dataframe[0].value["CVE"]) == ["https://nvd.nist.gov/vuln/detail/CVE-2021-23017"]
+
+
+def test_a_rejected_target_is_repeated_back_as_plain_text():
+    at = _session()
+    at.session_state["user_keys"] = {"cohere": "session-key"}
+    _analyse(at, "[x](www.evil.example).local")
+    assert [e.value for e in at.error] == [r"\[x\]\(`www.evil.example`\)\.local is a local name, not a public target\."]

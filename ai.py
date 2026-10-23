@@ -286,7 +286,22 @@ _MD_LINK = re.compile(r"\[([^\]\n]{1,500})\]\(([^)\n]{0,2000})\)")
 _MD_REPORT_ESCAPE = re.compile(r"\\.|[\[\]<$]")
 # Cohere sometimes wraps cited text in citation tags like <co: 0:[0]>...</co: 0:[0]>; only the tags are dropped
 _COHERE_CITATION_TAG = re.compile(r"</?co(?::[^<>\n]{0,100})?>", re.IGNORECASE)
-_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>$~])")
+# Inline code spans, left as they are. Bounded, so matching stays linear on hostile input.
+_CODE_SPAN = re.compile(r"(``[^\n]{0,500}?``|`[^`\n]{0,500}`)")
+# Streamlit links every URL it finds in the rendered text, escaped or not; only code spans stop it.
+_BARE_URL = re.compile(r"(?<![\w.@/])(?:https?://|www\.)[^\s`<>\"'()\[\]{}]{1,2000}", re.IGNORECASE)
+# ':' too, so third-party text can't use Streamlit's ":red[...]" colours, badges or emoji shortcodes.
+_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>$~:])")
+
+
+def _urls_as_code(text: str, escape: Callable[[str], str] = lambda s: s) -> str:
+    """Show each URL as code (readable and copyable, not clickable); ``escape`` the text around them."""
+    out, last = [], 0
+    for m in _BARE_URL.finditer(text):
+        url = m.group().rstrip(".,;:!?")  # sentence punctuation stays outside
+        out += [escape(text[last:m.start()]), f"`{url}`"]
+        last = m.start() + len(url)
+    return "".join(out) + escape(text[last:])
 
 
 def sanitize_report_markdown(text: str) -> str:
@@ -297,7 +312,9 @@ def sanitize_report_markdown(text: str) -> str:
     destination. Common inline images are replaced by their alt text and inline http(s)
     links are written out as "label (url)". Every remaining '[', ']' and '<' is then
     escaped, so no image, link, reference definition or HTML tag of any form survives;
-    '$' is escaped so it isn't parsed as LaTeX. Headings, lists, tables and emphasis still render.
+    '$' is escaped so it isn't parsed as LaTeX. Bare URLs are shown as code, which Streamlit
+    doesn't turn into links, so the only links in the report are the NVD ones link_cves adds.
+    Headings, lists, tables and emphasis still render.
     """
     text = _COHERE_CITATION_TAG.sub("", text or "")
     text = _MD_IMAGE.sub(lambda m: f"(image removed: {m.group(1)})", text)
@@ -310,20 +327,32 @@ def sanitize_report_markdown(text: str) -> str:
         return label
 
     text = _MD_LINK.sub(link, text)
-    return _MD_REPORT_ESCAPE.sub(lambda m: m.group() if len(m.group()) == 2 else "\\" + m.group(), text)
+    text = _MD_REPORT_ESCAPE.sub(lambda m: m.group() if len(m.group()) == 2 else "\\" + m.group(), text)
+    return _outside_code(text, _urls_as_code)
+
+
+def _outside_code(markdown: str, change: Callable[[str], str]) -> str:
+    """Apply ``change`` to the Markdown outside code blocks and inline code spans."""
+    lines, fenced = [], False
+    for line in markdown.split("\n"):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced:
+            # Odd parts are code spans.
+            line = "".join(p if i % 2 else change(p) for i, p in enumerate(_CODE_SPAN.split(line)))
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def escape_markdown(text: Any) -> str:
-    """Render untrusted short strings (tool args, error messages) as literal text."""
-    return _MD_SPECIAL.sub(r"\\\1", str(text))
+    """Render untrusted short strings (tool args, error messages) as literal text, with URLs as code."""
+    return _urls_as_code(str(text), lambda part: _MD_SPECIAL.sub(r"\\\1", part))
 
 
 NVD_CVE_PAGE = "https://nvd.nist.gov/vuln/detail/"
 # A CVE ID in escaped Markdown ("CVE-2021-44228" or "CVE\-2021\-44228"), but not inside a URL or word, and not
 # after "!", which would make the link an image the browser loads by itself.
 _CVE_MENTION = re.compile(r"(?<![\w/\\`=?&#.!-])CVE(\\?-)(1999|20\d{2})\1(\d{4,7})(?![\w`-])", re.IGNORECASE)
-# Inline code spans, left as they are. Bounded, so matching stays linear on hostile input.
-_CODE_SPAN = re.compile(r"(``[^\n]{0,500}?``|`[^`\n]{0,500}`)")
 
 
 def link_cves(markdown: str) -> str:
@@ -335,15 +364,8 @@ def link_cves(markdown: str) -> str:
     def link(m: re.Match) -> str:
         return f"[{m.group(0)}]({NVD_CVE_PAGE}CVE-{m.group(2)}-{m.group(3)})"
 
-    lines, fenced = [], False
-    for line in markdown.split("\n"):
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-        elif not fenced:
-            # Odd parts are code spans, where a link would show as raw text.
-            line = "".join(p if i % 2 else _CVE_MENTION.sub(link, p) for i, p in enumerate(_CODE_SPAN.split(line)))
-        lines.append(line)
-    return "\n".join(lines)
+    # Not in code, where a link would show as raw text.
+    return _outside_code(markdown, lambda part: _CVE_MENTION.sub(link, part))
 
 
 def _message_text(message: Any) -> str:
@@ -1061,12 +1083,13 @@ def build_markdown_export(data: Dict[str, Any]) -> str:
     facts = data.get("key_facts") or []
     return (
         f"# AI Vulnerability Exposure Report: {escape_markdown(meta['target'])}\n\n"
-        f"- Target type: {meta['target_type']}\n- Depth: {meta['complexity']}\n"
-        f"- Generated: {meta['generated_at']}\n- Model: {meta['model']}\n\n"
+        f"- Target type: {meta['target_type']}\n- Depth: {escape_markdown(meta['complexity'])}\n"
+        f"- Generated: {escape_markdown(meta['generated_at'])}\n- Model: {escape_markdown(meta['model'])}\n\n"
         "## Key Facts (computed from the data sources)\n\n"
         + "".join(f"- **{escape_markdown(f['label'])}:** {escape_markdown(f['value'])}\n" for f in facts)
         + f"\n{sanitize_report_markdown(data['report_markdown'])}\n\n---\n"
         f"Software found: {', '.join(escape_markdown(s) for s in summary['discovered_software']) or 'none'}  \n"
-        f"CISA KEV confirmed for this target: {', '.join(summary['cisa_kev_confirmed']) or 'none'}  \n"
-        f"CISA KEV related (product family/vendor, unconfirmed): {', '.join(summary['cisa_kev_related']) or 'none'}\n"
+        f"CISA KEV confirmed for this target: {escape_markdown(', '.join(summary['cisa_kev_confirmed'])) or 'none'}  \n"
+        "CISA KEV related (product family/vendor, unconfirmed): "
+        f"{escape_markdown(', '.join(summary['cisa_kev_related'])) or 'none'}\n"
     )

@@ -236,7 +236,7 @@ if run_clicked:
     keys = effective_keys()
     wait = RUN_COOLDOWN_SECONDS - (time.time() - st.session_state.last_run)
     if target.type == "invalid":
-        st.error(target.error)
+        st.error(escape_markdown(target.error))  # can repeat what was typed
     elif not keys.cohere:
         st.error(f"A Cohere API key is required. Get one free at {key_link('cohere')}, "
                  "then add it under API Keys Configuration.")
@@ -284,7 +284,8 @@ if data:
     meta, execution, summary = data["metadata"], data["execution"], data["summary"]
     st.divider()
     st.header(f"Security Report: {escape_markdown(meta['target'])}")
-    st.caption(f"Model: {meta['model']} · Depth: {meta['complexity']} · Generated: {meta['generated_at']}")
+    st.caption(f"Model: {escape_markdown(meta['model'])} · Depth: {escape_markdown(meta['complexity'])} · "
+               f"Generated: {escape_markdown(meta['generated_at'])}")
 
     confirmed_kev = summary.get("cisa_kev_confirmed", [])
     related_kev = summary.get("cisa_kev_related", [])
@@ -299,10 +300,10 @@ if data:
         cols[2].metric("CVEs referenced", len(summary["cves_referenced"]))
     cols[3].metric("KEV confirmed", len(confirmed_kev),
                    help="Exploited-in-the-wild CVEs (CISA KEV) confirmed to affect this target's exact version: "
-                        + (", ".join(confirmed_kev) or "none"))
+                        + (escape_markdown(", ".join(confirmed_kev)) or "none"))
     cols[4].metric("KEV related", len(related_kev),
                    help="Exploited-in-the-wild CVEs for the same product family or vendor. Not confirmed "
-                        "to affect this target: " + (", ".join(related_kev) or "none"))
+                        "to affect this target: " + (escape_markdown(", ".join(related_kev)) or "none"))
 
     facts = data.get("key_facts") or []
     if facts:
