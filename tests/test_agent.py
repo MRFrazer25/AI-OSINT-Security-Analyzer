@@ -503,3 +503,23 @@ def test_cve_table_lists_confirmed_cves_most_urgent_first():
         99.99, True, True, "after 1.25.2")
     assert table["total"] == 12 and table["by_severity"] == {"HIGH": 2, "MEDIUM": 10}
     assert ai.build_cve_table({"summary": {}, "tool_calls": []}) == {"rows": [], "total": 0, "by_severity": {}}
+
+
+def test_a_look_alike_domain_gets_a_key_fact():
+    result = ai.AgentResult(target=ai.classify_target("g\u043e\u043egle.com"), report="", complexity="Quick Scan",
+                            model="m", tool_calls=[])
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert "xn--ggle-55da.com is the encoded form of g\u043e\u043egle.com" in facts["Domain name"]
+    assert "look-alike" in facts["Domain name"]
+
+
+def test_cve_ids_are_linked_to_nvd_by_code_only():
+    assert ai.link_cves("See CVE-2021-44228.") == (
+        "See [CVE-2021-44228](https://nvd.nist.gov/vuln/detail/CVE-2021-44228).")
+    escaped = ai.escape_markdown("CVE-2021-44228")
+    assert ai.link_cves(escaped) == f"[{escaped}](https://nvd.nist.gov/vuln/detail/CVE-2021-44228)"
+    # A link the model wrote stays plain text; only the ID itself gets the NVD link.
+    report = ai.link_cves(ai.sanitize_report_markdown("[CVE-2021-1234](https://evil.example/x)"))
+    assert report == "[CVE-2021-1234](https://nvd.nist.gov/vuln/detail/CVE-2021-1234) (https://evil.example/x)"
+    for text in ("https://evil.example/?q=CVE-2021-1234", "`CVE-2021-1234`", "CVE-0000-0000", "XCVE-2021-1234"):
+        assert ai.link_cves(text) == text

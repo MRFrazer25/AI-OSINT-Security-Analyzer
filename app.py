@@ -16,8 +16,9 @@ try:  # before importing ai, so COHERE_MODEL in .env sets the default model (API
 except ImportError:
     pass
 
-from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_cve_table, build_markdown_export,
-                build_report_data, escape_markdown, run_agent, sanitize_report_markdown)
+from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, NVD_CVE_PAGE, build_cve_table,
+                build_markdown_export, build_report_data, escape_markdown, link_cves, run_agent,
+                sanitize_report_markdown)
 from lookups import KEY_SIGNUP_URLS, ApiKeys, classify_target
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -308,7 +309,7 @@ if data:
         with st.container(border=True):
             st.markdown("**Key facts** · computed directly from the data sources, identical on every run")
             # Values include third-party text (banners, product names), so escape them.
-            st.markdown("\n".join(f"- **{escape_markdown(f['label'])}:** {escape_markdown(f['value'])}"
+            st.markdown("\n".join(f"- **{escape_markdown(f['label'])}:** {link_cves(escape_markdown(f['value']))}"
                                   for f in facts))
 
     if cve_table["rows"]:
@@ -320,19 +321,23 @@ if data:
         columns = ["CVE", "Severity", "In CISA KEV", "EPSS %", "Fixed in", "CVSS", "Exploit published"]
         if len({row["Software"] for row in cve_table["rows"]}) > 1:
             columns.insert(1, "Software")
-        st.dataframe(cve_table["rows"], hide_index=True, width="stretch", column_order=columns, column_config={
+        rows = [{**row, "CVE": NVD_CVE_PAGE + row["CVE"]} for row in cve_table["rows"]]
+        st.dataframe(rows, hide_index=True, width="stretch", column_order=columns, column_config={
+            "CVE": st.column_config.LinkColumn(display_text=r"https://nvd\.nist\.gov/vuln/detail/(.*)",
+                                               help="Opens the CVE's page on NVD (nvd.nist.gov)"),
             "CVSS": st.column_config.NumberColumn(format="%.1f"),
             "EPSS %": st.column_config.NumberColumn(format="%.2f%%", help="Chance of exploitation in the next 30 days"),
             "In CISA KEV": st.column_config.CheckboxColumn(help="Known to be exploited in the wild"),
             "Exploit published": st.column_config.CheckboxColumn(help="Exploit code is on Exploit-DB"),
         })
         st.caption(f"Showing {len(cve_table['rows'])} of {cve_table['total']} confirmed CVEs, most urgent first "
-                   "(in CISA KEV, then EPSS, then CVSS). Click a column heading to sort; on a phone, swipe the "
-                   "table sideways for more columns.")
+                   "(in CISA KEV, then EPSS, then CVSS). Click a CVE to open it on NVD, or a column heading to sort; on a "
+                   "phone, swipe the table sideways for more columns.")
 
     st.markdown("**AI assessment**")
     # The report can echo untrusted third-party text: render Markdown only (no HTML), with remote images removed.
-    st.markdown(sanitize_report_markdown(data["report_markdown"]))
+    # CVE IDs are then linked to NVD by code (link_cves), never to a URL the model wrote.
+    st.markdown(link_cves(sanitize_report_markdown(data["report_markdown"])))
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = f"vulnerability_report_{safe_filename(meta['target'])}_{stamp}"

@@ -22,6 +22,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import cmp_to_key
 from itertools import zip_longest
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 HTTP_TIMEOUT = 20
 USER_AGENT = "ai-vulnerability-exposure-analyzer/2.0 (+https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer)"
 MAX_TARGET_LENGTH = 253
+MAX_VERSION_LENGTH = 40  # real versions are far shorter
 
 NVD_CVE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_CPE_URL = "https://services.nvd.nist.gov/rest/json/cpes/2.0"
@@ -209,7 +211,7 @@ def _http_get(url: str, *, params: Optional[dict] = None, headers: Optional[dict
 # Target classification and validation
 # ---------------------------------------------------------------------------
 
-CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+CVE_RE = re.compile(r"^CVE-(?:1999|20\d{2})-\d{4,}$", re.IGNORECASE)  # the first CVE IDs are from 1999
 DOMAIN_RE = re.compile(
     r"^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$",
     re.IGNORECASE,
@@ -290,6 +292,8 @@ def classify_target(raw: str) -> Target:
 
     if is_valid_cve(value):
         return Target(value.upper(), "cve")
+    if re.fullmatch(r"CVE-\d+-\d+", value, re.IGNORECASE):
+        return Target(value, "invalid", f"{value} isn't a valid CVE ID (they look like CVE-2021-44228, from 1999 on).")
 
     lowered = value.lower().rstrip(".")
     if lowered == "localhost" or lowered.endswith(_LOCAL_SUFFIXES):
@@ -2205,6 +2209,8 @@ def cve_search(search_term: str, keys: Optional[ApiKeys] = None, result_limit: i
     term = " ".join((search_term or "").split())[:100]
     if not term:
         return {"tool": "cve_search", "error": "search_term is required"}
+    if not re.search(r"[a-z0-9]", term, re.IGNORECASE):
+        return {"tool": "cve_search", "error": "search_term needs a product, vendor or keyword, not only symbols"}
     if is_valid_cve(term):
         return nvd_lookup(term, keys)
     try:
@@ -2253,7 +2259,7 @@ def cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
     ids = list(dict.fromkeys(ids))[:50]
     invalid = [c for c in ids if not is_valid_cve(c)]
     ids = [c for c in ids if is_valid_cve(c)]
-    software = [s.strip() for s in as_list(software_list) if s and s.strip()][:20]
+    software = [s.strip()[:80] for s in as_list(software_list) if s and re.search(r"[a-z0-9]", s, re.IGNORECASE)][:20]
     if not ids and not software:
         return {"tool": "cisa_kev", "error": "Provide cve_ids and/or software_list"}
     try:
@@ -2301,8 +2307,12 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
     name = " ".join(str(software_name or "").split())[:80]
     if not name:
         return {"tool": "version_check", "error": "software_name is required"}
-    version = str(version).strip() if version is not None else ""
-    version = extract_version(version) if version.lower() not in ("unknown", "none", "n/a", "") else None
+    given = str(version).strip() if version is not None else ""
+    version = extract_version(given) if given.lower() not in ("unknown", "none", "n/a", "") else None
+    if given and version is None and given.lower() not in ("unknown", "none", "n/a"):
+        return {"tool": "version_check", "error": f"{given[:40]!r} isn't a version number (e.g. 1.20.1)."}
+    if version and len(version) > MAX_VERSION_LENGTH:
+        return {"tool": "version_check", "error": f"Version is too long (max {MAX_VERSION_LENGTH} characters)."}
 
     try:
         products = _resolve_products(name, keys)
@@ -2609,6 +2619,7 @@ def _no_candidates_note(products: List[Tuple[str, str]], version: str, keys: Opt
     """Why a version matched nothing, and whether NVD has CVEs for the product but writes its versions differently."""
     names = ", ".join(f"{v}:{p}" for v, p in products)
     examples: List[str] = []
+    bounds: List[str] = []  # range ends too ("before 1.27.4"), for the newest version NVD names
     try:
         vendor, product = products[0]
         _, recent = _nvd_most_recent({"virtualMatchString": f"cpe:2.3:*:{vendor}:{product}"}, keys, 20)
@@ -2617,12 +2628,22 @@ def _no_candidates_note(products: List[Tuple[str, str]], version: str, keys: Opt
                 for node in config.get("nodes", []) or []:
                     for match in node.get("cpeMatch", []) or []:
                         cpe = _parse_cpe(match.get("criteria", ""))
+                        if cpe["product"] == product:
+                            bounds += [match[k] for k in ("versionEndExcluding", "versionEndIncluding")
+                                       if match.get(k)]
                         if cpe["product"] == product and cpe["version"] not in ("*", "-", ""):
                             label = cpe["version"] + (f" {cpe['update']}" if cpe["update"] not in ("*", "-", "") else "")
                             if label not in examples:
                                 examples.append(label)
     except SourceError:
         pass
+    numbered = [e for e in examples + bounds if re.fullmatch(r"\d+(?:\.\d+)+", e)]
+    if numbered and re.fullmatch(r"\d+(?:\.\d+)+", version) and all(compare_versions(version, e) > 0
+                                                                     for e in numbered):
+        newest = max(numbered, key=cmp_to_key(compare_versions))
+        return (f"NVD has CVEs for {names}, but none reach version {version}: it is newer than every version "
+                f"their records name (newest: {newest}). Check the version is typed correctly. If it is, no CVE "
+                "in NVD covers it yet; check the vendor's advisories, and don't treat it as proven safe."), False
     if examples:
         return (f"NVD has CVEs for {names}, but none at version {version}. NVD writes this product's versions like: "
                 f"{', '.join(examples[:5])}. Retry with a version in that form, or check the vendor's advisories. "

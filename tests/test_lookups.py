@@ -989,3 +989,37 @@ def test_add_on_products_are_not_mixed_in_with_the_product(monkeypatch):
                           for p in ("bitbucket_auto_unapprove", "bitbucket_auto_unapprove", "bitbucket")]}
     monkeypatch.setattr(t, "_nvd_get", lambda url, params, keys: found)
     assert t._resolve_products("Atlassian Bitbucket", None) == [("atlassian", "bitbucket")]
+
+
+def test_junk_and_misleading_input_is_refused_before_any_lookup(monkeypatch):
+    def no_network(*args, **kwargs):
+        raise AssertionError("no lookup should run")
+
+    monkeypatch.setattr(t, "_nvd_get", no_network)
+    monkeypatch.setattr(t, "_nvd_most_recent", no_network)
+    assert t.classify_target("CVE-0000-0000").type == "invalid"  # CVE IDs began in 1999
+    assert t.classify_target("CVE-1999-0001").type == "cve"
+    assert "isn't a version number" in t.version_specific_vulnerability_check("nginx", version="../../")["error"]
+    assert "too long" in t.version_specific_vulnerability_check("nginx", version="1" * 500)["error"]
+    assert "only symbols" in t.cve_search("*")["error"]
+
+
+def test_kev_product_names_are_capped_and_symbol_only_names_dropped(monkeypatch):
+    monkeypatch.setattr(t, "_load_kev_catalog", lambda: {"by_cve": {}, "vulnerabilities": [], "date_released": "d"})
+    r = t.cisa_kev_check(software_list=["*", " ", "a" * 1000, "nginx"])
+    assert list(r["software_matches"]) == ["a" * 80, "nginx"]
+
+
+def test_a_version_newer_than_any_in_nvd_is_not_called_a_numbering_mismatch(monkeypatch):
+    nginx = {"id": "CVE-2026-0002", "configurations": [{"nodes": [{"cpeMatch": [
+        {"vulnerable": True, "criteria": "cpe:2.3:a:f5:nginx:1.25.3:*:*:*:*:*:*:*"},
+        {"vulnerable": True, "criteria": "cpe:2.3:a:f5:nginx:1.27.4:*:*:*:*:*:*:*"},
+        {"vulnerable": True, "criteria": "cpe:2.3:a:f5:nginx:*:*:*:*:*:*:*:*", "versionEndExcluding": "1.29.2"}]}]}]}
+    monkeypatch.setattr(t, "_resolve_products", lambda name, keys: [("f5", "nginx")])
+    monkeypatch.setattr(t, "_nvd_get", lambda url, params, keys: {"totalResults": 0, "vulnerabilities": []})
+    monkeypatch.setattr(t, "_nvd_most_recent", lambda params, keys, limit: (1, [nginx]))
+    monkeypatch.setattr(t, "_package_advisories", lambda products, version: (None, [], set()))
+    r = t.version_specific_vulnerability_check("nginx", version="99.99.99")
+    assert r["security_status"] == "NO_KNOWN_VULNERABILITIES"
+    assert "newer than every version their records name (newest: 1.29.2)" in r["no_candidates_note"]
+    assert "typed correctly" in r["no_candidates_note"]

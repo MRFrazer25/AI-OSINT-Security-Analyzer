@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import cohere
 
 from lookups import (KEV_RECENT_DAYS, KEY_SIGNUP_URLS, TOOL_FUNCTIONS, ApiKeys, Target, classify_target,
-                     epss_percent, normalize_software_name, redact)
+                     epss_percent, is_valid_cve, normalize_software_name, redact)
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,7 @@ A Markdown table: Finding | Severity | Evidence (source).
 Subsections that apply: Exposure & Services, Threat Intelligence & Reputation, Vulnerabilities, Exploitation Status (KEV, EPSS).
 Inside Vulnerabilities use exactly these headings, and write "None" under any that is empty:
 - Confirmed: CVEs NVD version-matched to this exact product version (status AFFECTED), or the CVE being analysed.
-  Under Confirmed, give a Markdown table with exactly these columns: CVE | Severity | EPSS | In KEV | Fixed in. Most urgent first (in KEV, then EPSS), at most 10 rows, then say how many more there are. Keep each cell short ("Yes"/"No", "12.3%", "1.26.3") so the table fits a phone screen.
+  Under Confirmed, give a Markdown table with exactly these columns: CVE | Severity | EPSS | In KEV | Fixed in. Most urgent first (in KEV, then EPSS), at most 10 rows, then say how many more there are. Keep each cell short ("Yes"/"No", "12.3%", "1.26.3") so the table fits a phone screen. Don't write links: the app links each CVE ID to its NVD page itself.
 - Related (unconfirmed): product-family or vendor-level matches, including product-level CISA KEV matches. Quote their EPSS.
 - Needs Review: CVEs NVD hasn't analysed yet for this product, or products whose version is unknown.
 - Ruled Out: CVEs NVD shows do NOT affect this version. "No data found" is not "ruled out"; list it under Limitations instead.
@@ -316,6 +316,20 @@ def sanitize_report_markdown(text: str) -> str:
 def escape_markdown(text: Any) -> str:
     """Render untrusted short strings (tool args, error messages) as literal text."""
     return _MD_SPECIAL.sub(r"\\\1", str(text))
+
+
+NVD_CVE_PAGE = "https://nvd.nist.gov/vuln/detail/"
+# A CVE ID in escaped Markdown ("CVE-2021-44228" or "CVE\-2021\-44228"), but not inside a URL, word or code span.
+_CVE_MENTION = re.compile(r"(?<![\w/\\`=?&#.-])CVE(\\?-)(1999|20\d{2})\1(\d{4,7})(?![\w`-])", re.IGNORECASE)
+
+
+def link_cves(markdown: str) -> str:
+    """Link each CVE ID in already-escaped Markdown to its NVD page.
+
+    The link is built here from the ID's digits alone, so neither the model nor third-party text can choose
+    where it points; links they write are still shown as plain text by sanitize_report_markdown.
+    """
+    return _CVE_MENTION.sub(lambda m: f"[{m.group(0)}]({NVD_CVE_PAGE}CVE-{m.group(2)}-{m.group(3)})", markdown)
 
 
 def _message_text(message: Any) -> str:
@@ -653,6 +667,14 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
 
     def add(label: str, value: str) -> None:
         facts.append({"label": label, "value": value})
+
+    if result.target.type == "domain" and "xn--" in result.target.value:
+        try:
+            shown = result.target.value.encode("ascii").decode("idna")
+        except UnicodeError:
+            shown = result.target.value
+        add("Domain name", f"{result.target.value} is the encoded form of {shown}, which uses non-Latin letters. "
+                           "Check it isn't a look-alike of a name you know.")
 
     for rec in result.tool_calls:
         r = rec.result
@@ -995,7 +1017,7 @@ def build_cve_table(data: Dict[str, Any]) -> Dict[str, Any]:
             by_severity[str(severity).upper()] += int(count)
         for v in r.get("affected_cves") or []:
             cve_id = v.get("cve_id")
-            if not cve_id or cve_id in backported or cve_id in rows:
+            if not cve_id or not is_valid_cve(cve_id) or cve_id in backported or cve_id in rows:
                 continue
             epss = (v.get("epss") or {}).get("epss")
             rows[cve_id] = {
