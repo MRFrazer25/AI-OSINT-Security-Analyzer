@@ -457,3 +457,28 @@ def test_kev_is_not_reported_as_clear_before_any_kev_lookup():
     facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
     assert facts["CISA KEV: confirmed for this target"] == "not checked"
     assert facts["CISA KEV: related (product family or vendor)"] == "not checked"
+
+
+
+def test_lookups_that_found_nothing_say_so_in_the_key_facts():
+    # Real gap: Shodan had no data for 1.10.16.1, so it was listed as checked but had no line of its own.
+    shodan = ("shodan_search", {"tool": "shodan", "success": False, "info": "Shodan has no scan data for 1.10.16.1"})
+    result = ai.AgentResult(target=ai.classify_target("1.10.16.1"), report="", complexity="Quick Scan", model="m",
+                           tool_calls=[ai.ToolCallRecord(shodan[0], {}, 1, "t", 1, shodan[1])])
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert facts["Shodan"] == "Shodan has no scan data for 1.10.16.1"
+    assert "Shodan" in facts["Sources checked"]
+
+
+
+def test_a_version_check_without_a_version_still_has_a_key_fact():
+    # Real gap: "nginx" with no version returned recent CVEs, but the key facts said nothing about them.
+    check = ("version_specific_vulnerability_check", {
+        "tool": "version_check", "success": True, "software": "nginx", "version": None,
+        "security_status": "UNKNOWN_VERSION", "total_cves_for_product": 120,
+        "most_recent_cves": [{"cve_id": "CVE-2026-0001", "severity": "HIGH"}]})
+    result = ai.AgentResult(target=ai.classify_target("nginx"), report="", complexity="Quick Scan", model="m",
+                           tool_calls=[ai.ToolCallRecord(check[0], {}, 1, "t", 1, check[1])])
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert facts["nginx (no version given)"] == ("120 CVEs in NVD for this product; most recent: CVE-2026-0001 "
+                                                 "(HIGH). None can be confirmed without a version.")

@@ -307,6 +307,12 @@ def classify_target(raw: str) -> Target:
         return Target(str(ipaddress.ip_address(candidate_ip)), "ip" if ok else "invalid", err)
     except ValueError:
         pass
+    if "/" in value:
+        try:
+            ipaddress.ip_network(value, strict=False)
+            return Target(value, "invalid", "IP ranges aren't supported. Enter a single public IP address.")
+        except ValueError:
+            pass
 
     domain = value.lower().rstrip(".")
     if is_valid_domain(domain):
@@ -394,8 +400,21 @@ SOFTWARE_CPE_ALIASES: Dict[str, Tuple[str, str]] = {
     "apache traffic server": ("apache", "traffic_server"),
     "traffic server": ("apache", "traffic_server"),
     "exchange server": ("microsoft", "exchange_server"),
+    "roundcube": ("roundcube", "webmail"),
+    "roundcube webmail": ("roundcube", "webmail"),
+    "jira service management": ("atlassian", "jira_service_management"),
     "microsoft exchange": ("microsoft", "exchange_server"),
     "microsoft exchange server": ("microsoft", "exchange_server"),
+}
+
+# Products whose CVEs NVD files under two CPEs at once. A keyword search finds only the legacy CPE
+# (atlassian:confluence, whose versions look like 2.0.1_build_321), so these are mapped explicitly.
+_PRODUCT_FAMILIES: Dict[str, List[Tuple[str, str]]] = {
+    "confluence": [("atlassian", "confluence_server"), ("atlassian", "confluence_data_center")],
+    "confluence data center": [("atlassian", "confluence_server"), ("atlassian", "confluence_data_center")],
+    "jira": [("atlassian", "jira_server"), ("atlassian", "jira_data_center")],
+    "jira software": [("atlassian", "jira_server"), ("atlassian", "jira_data_center")],
+    "jira data center": [("atlassian", "jira_server"), ("atlassian", "jira_data_center")],
 }
 
 # Placeholder words a model may pass instead of a real product name.
@@ -1257,12 +1276,20 @@ def _find_release(distro: str, package: str, version: str) -> Tuple[Optional[str
         for release, ecosystems in DISTRO_RELEASES["debian"]:
             if release == match.group(1):
                 return release, ecosystems[0], []
-    found: List[Tuple[str, str]] = []
+    # Exact matches win: the loose match (for banners such as OpenSSH's "6.6.1p1") also pairs different upstream
+    # versions that share a revision, e.g. apache2 2.4.52-1ubuntu4.6 with 2.4.29-1ubuntu4.6 on another release.
+    exact: List[Tuple[str, str]] = []
+    close: List[Tuple[str, str]] = []
     for release, ecosystems in DISTRO_RELEASES[distro]:
-        for ecosystem in ecosystems:
-            if _match_package_version(version, _osv_package(ecosystem, package)["versions"]):
-                found.append((release, ecosystem))
-                break
+        lists = [(e, _osv_package(e, package)["versions"]) for e in ecosystems]
+        hit = next((e for e, versions in lists if _strip_epoch(version) in versions), None)
+        if hit:
+            exact.append((release, hit))
+            continue
+        hit = next((e for e, versions in lists if _match_package_version(version, versions)), None)
+        if hit:
+            close.append((release, hit))
+    found = exact or close
     if len(found) == 1:
         return found[0][0], found[0][1], []
     return None, None, [release for release, _ in found]
@@ -2650,10 +2677,13 @@ def _upgrade_with_review_note(upgrade: Optional[Dict[str, Any]], unanalyzed: Lis
 
 def _resolve_products(name: str, keys: Optional[ApiKeys]) -> List[Tuple[str, str]]:
     """Map a free-form software name to NVD CPE (vendor, product) pairs."""
+    normalized = _DAEMON_SUFFIXES.sub("", normalize_software_name(name))
+    family = _PRODUCT_FAMILIES.get(normalized.removeprefix("atlassian "))
+    if family:
+        return list(family)
     alias = resolve_cpe_alias(name)
     if alias:
         return [alias]
-    normalized = _DAEMON_SUFFIXES.sub("", normalize_software_name(name))
     if normalized in _GENERIC_SOFTWARE_NAMES or len(normalized) < 2:
         return []
     guess = normalized.replace(" ", "_")

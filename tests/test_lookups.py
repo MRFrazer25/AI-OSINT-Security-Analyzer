@@ -932,3 +932,30 @@ def test_never_affected_versions_get_no_fixing_version():
               "versions": []}
     assert t._package_status("8.9p1-3ubuntu0.6", record) == {"affected": False, "fixed_in": None}
     assert t._package_status("9.6p1-3ubuntu2", record) == {"affected": False, "fixed_in": "1:9.6p1-3ubuntu1"}
+
+
+
+def test_roundcube_and_atlassian_products_map_to_the_cpes_nvd_uses():
+    # Real misses: Roundcube's CVEs are under roundcube:webmail, and Confluence 7.18.0 matched the legacy
+    # atlassian:confluence CPE instead of the server and data center editions.
+    assert t._resolve_products("Roundcube", None) == [("roundcube", "webmail")]
+    assert t._resolve_products("Atlassian Confluence", None) == [("atlassian", "confluence_server"),
+                                                                  ("atlassian", "confluence_data_center")]
+    assert t._resolve_products("Confluence Server", None)[0] == ("atlassian", "confluence_server")
+    assert t._resolve_products("Jira", None) == [("atlassian", "jira_server"), ("atlassian", "jira_data_center")]
+    assert t._resolve_products("Jira Service Management", None) == [("atlassian", "jira_service_management")]
+
+
+def test_distro_release_prefers_an_exact_package_version(monkeypatch):
+    # Real case: apache2 2.4.52-1ubuntu4.6 is only in 22.04, but the loose banner match also paired it with
+    # 18.04's 2.4.29-1ubuntu4.6 and 14.04's 2.4.7-1ubuntu4.6, so the release was called ambiguous.
+    _fake_osv(monkeypatch, {"Ubuntu:22.04:LTS": {"versions": ["2.4.52-1ubuntu4.6"], "records": []},
+                            "Ubuntu:18.04:LTS": {"versions": ["2.4.29-1ubuntu4.6"], "records": []},
+                            "Ubuntu:14.04:LTS": {"versions": ["2.4.7-1ubuntu4.6"], "records": []}})
+    assert t.distro_patch_check("apache2", "2.4.52-1ubuntu4.6", "Ubuntu")["release"] == "22.04"
+
+
+
+def test_ip_ranges_get_a_clear_error():
+    target = t.classify_target("8.8.8.8/24")
+    assert target.type == "invalid" and "single public IP" in target.error

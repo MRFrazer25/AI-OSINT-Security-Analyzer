@@ -660,6 +660,10 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
             continue  # the same lookup repeated
         seen_tools.add(call_key)
         if not r.get("success"):
+            # A lookup that found nothing says so, so a source under "Sources checked" is never just missing here.
+            if r.get("info") and not r.get("error"):
+                tool = r.get("tool") or rec.tool
+                add(SOURCE_LABELS.get(tool, tool), str(r["info"]))
             continue
         r = defaultdict(lambda: "?", r)  # a missing field shows as "?" instead of breaking the whole box
         tool = r.get("tool")
@@ -725,6 +729,11 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
         elif tool == "abuseipdb":
             add("AbuseIPDB", f"confidence {r['abuse_confidence_percent']}%, {r['total_reports']} reports "
                              f"in {r['report_window_days']} days ({r['threat_level']})")
+        elif tool == "version_check" and r.get("security_status") == "UNKNOWN_VERSION":
+            recent = ", ".join(f"{v['cve_id']} ({v['severity']})" for v in r.get("most_recent_cves", [])[:3])
+            add(f"{r['software']} (no version given)",
+                f"{r.get('total_cves_for_product', 0)} CVEs in NVD for this product"
+                + (f"; most recent: {recent}" if recent else "") + ". None can be confirmed without a version.")
         elif tool == "version_check" and r.get("version"):
             top = ", ".join(f"{v['cve_id']} ({v['severity']})" for v in r.get("affected_cves", [])[:3])
             advised = bool((r.get("package_advisories") or {}).get("added"))
