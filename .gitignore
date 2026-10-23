@@ -62,6 +62,8 @@ credentials.json
 *.pem
 api_keys.txt
 secrets.json
+*.p12
+*.pfx
 
 # Test coverage
 .coverage
@@ -76,6 +78,7 @@ site/
 osint_report_*.md
 osint_report_*.json
 
-# Editor-local AI rules
+# Editor-local AI rules and settings
 .cursor/
+.claude/settings.local.json
 .ruff_cache/
