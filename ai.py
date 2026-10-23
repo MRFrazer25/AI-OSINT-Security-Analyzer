@@ -442,7 +442,8 @@ class _ToolRunner:
         cache_key = name + json.dumps(args, sort_keys=True, default=str)
         if cache_key in self._cache:
             return {**self._cache[cache_key], "_note": "Duplicate call: returning the earlier result."}
-        if name in QUOTA_TOOLS:
+        # Without a Shodan key, lookups go to the free InternetDB, which costs no quota.
+        if name in QUOTA_TOOLS and not (name == "osint_shodan_search" and not self.keys.shodan):
             if self._counts.get(name, 0) >= self.profile["quota_tool_cap"]:
                 return {"tool": name, "error": f"Per-analysis limit for {name} reached "
                                                f"({self.profile['quota_tool_cap']} calls) to protect API quotas."}
@@ -838,6 +839,7 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
         else:
             ran[tool] = SOURCE_LABELS.get(tool, tool)
     if any(_has_key(rec.result, ("in_cisa_kev", "cisa_kev_product_matches", "cves_in_kev"))
+           and not _has_key(rec.result, ("kev_unavailable",))
            for rec in result.tool_calls if rec.status == "success"):
         ran.setdefault("kev", "CISA KEV")
     if any(_has_key(rec.result, ("epss",)) for rec in result.tool_calls if rec.status == "success"):

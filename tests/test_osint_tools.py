@@ -935,3 +935,21 @@ def test_version_check_says_when_nvd_numbers_versions_differently(monkeypatch):
     r = t.osint_version_specific_vulnerability_check("Microsoft Exchange Server", version="15.2.1544.4")
     assert r["security_status"] == "VERSION_NOT_MATCHED"
     assert "2019 cumulative_update_14" in r["no_candidates_note"] and "Don't treat this version as safe" in r["no_candidates_note"]
+
+
+def test_failed_downloads_are_not_retried_on_every_lookup(monkeypatch):
+    monkeypatch.setattr(t, "_exploitdb_cache", t._TTLCache(60))
+    calls = []
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: calls.append(url) or _Resp(503, None))
+    for _ in range(3):
+        with pytest.raises(t.SourceError):
+            t._exploitdb_index()
+    assert len(calls) == 1  # later calls fail fast instead of waiting on the timeout again
+
+
+def test_never_affected_versions_get_no_fixing_version():
+    # Introduced in 9.0 and fixed in 9.6: 8.9 was never affected, so no "fixed in" applies to it.
+    record = {"cve_id": "CVE-2099-0001", "ranges": [[{"introduced": "1:9.0p1-1"}, {"fixed": "1:9.6p1-3ubuntu1"}]],
+              "versions": []}
+    assert t._package_status("8.9p1-3ubuntu0.6", record) == {"affected": False, "fixed_in": None}
+    assert t._package_status("9.6p1-3ubuntu2", record) == {"affected": False, "fixed_in": "1:9.6p1-3ubuntu1"}

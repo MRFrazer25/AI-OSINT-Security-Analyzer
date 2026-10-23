@@ -175,6 +175,8 @@ _nvd_cache = _TTLCache(ttl_seconds=3600, maxsize=512, max_bytes=32 * 1024 * 1024
 _epss_cache = _TTLCache(ttl_seconds=12 * 3600, maxsize=5000)
 _kev_cache = _TTLCache(ttl_seconds=6 * 3600, maxsize=1)
 _rdap_bootstrap_cache = _TTLCache(ttl_seconds=24 * 3600, maxsize=2)
+# Downloads that just failed, so they aren't retried (with long timeouts) on every lookup.
+_source_failures = _TTLCache(ttl_seconds=15 * 60, maxsize=16)
 # Exploit-DB's index of published exploits is a 10 MB CSV; once a day is plenty.
 _exploitdb_cache = _TTLCache(ttl_seconds=24 * 3600, maxsize=1)
 # Spamhaus asks for automated downloads of DROP no more than once a day.
@@ -864,6 +866,25 @@ def _load_kev_catalog() -> Dict[str, Any]:
     cached = _kev_cache.get("catalog")
     if cached is not None:
         return cached
+    if _source_failures.get("kev"):
+        raise SourceError("CISA KEV feed unavailable; retrying in a few minutes")
+    try:
+        return _download_kev_catalog()
+    except SourceError:
+        _source_failures.set("kev", True)
+        raise
+
+
+def kev_catalog_available() -> bool:
+    """Could the KEV catalog be loaded? (Lets results say KEV wasn't checked instead of "not in KEV".)"""
+    try:
+        _load_kev_catalog()
+        return True
+    except SourceError:
+        return False
+
+
+def _download_kev_catalog() -> Dict[str, Any]:
     resp = _http_get(CISA_KEV_URL, timeout=30)
     if resp.status_code != 200:
         raise SourceError(f"CISA KEV feed returned HTTP {resp.status_code}")
@@ -1006,17 +1027,23 @@ def _exploitdb_index() -> Dict[str, List[Tuple[str, bool]]]:
     cached = _exploitdb_cache.get("index")
     if cached is not None:
         return cached
-    resp = _http_get(EXPLOITDB_CSV_URL, headers={"Accept": "text/csv, text/plain"}, timeout=60, retries=1)
-    if resp.status_code != 200:
-        raise SourceError(f"Exploit-DB index returned HTTP {resp.status_code}")
-    index: Dict[str, List[Tuple[str, bool]]] = {}
-    for row in csv.DictReader(io.StringIO(resp.text)):
-        for code in (row.get("codes") or "").split(";"):
-            code = code.strip().upper()
-            if CVE_RE.match(code):
-                index.setdefault(code, []).append((str(row.get("id") or ""), row.get("verified") == "1"))
-    if not index:
-        raise SourceError("Exploit-DB index had no CVE references")
+    if _source_failures.get("exploitdb"):
+        raise SourceError("Exploit-DB index unavailable; retrying in a few minutes")
+    try:
+        resp = _http_get(EXPLOITDB_CSV_URL, headers={"Accept": "text/csv, text/plain"}, timeout=60, retries=1)
+        if resp.status_code != 200:
+            raise SourceError(f"Exploit-DB index returned HTTP {resp.status_code}")
+        index: Dict[str, List[Tuple[str, bool]]] = {}
+        for row in csv.DictReader(io.StringIO(resp.text)):
+            for code in (row.get("codes") or "").split(";"):
+                code = code.strip().upper()
+                if CVE_RE.match(code):
+                    index.setdefault(code, []).append((str(row.get("id") or ""), row.get("verified") == "1"))
+        if not index:
+            raise SourceError("Exploit-DB index had no CVE references")
+    except (SourceError, csv.Error):
+        _source_failures.set("exploitdb", True)
+        raise
     _exploitdb_cache.set("index", index)
     return index
 
@@ -1040,6 +1067,7 @@ def exploit_lookup_many(cve_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
 def _enrich_with_exploit_intel(vulns: List[Dict[str, Any]]) -> None:
     ids = [v["cve_id"] for v in vulns if v.get("cve_id")]
     kev = kev_lookup_many(ids)
+    kev_missing = bool(ids) and not kev_catalog_available()
     epss = epss_lookup_many(ids)
     exploits = exploit_lookup_many(ids)
     for v in vulns:
@@ -1054,6 +1082,8 @@ def _enrich_with_exploit_intel(vulns: List[Dict[str, Any]]) -> None:
                 v["kev_date_added"] = v["cisa_kev"].get("date_added")
         if v.get("kev_date_added"):
             v.update(kev_age(v["kev_date_added"]))
+        if kev_missing:
+            v["kev_unavailable"] = True
         if cve_id in epss:
             v["epss"] = epss[cve_id]
         if cve_id in exploits:
@@ -1255,7 +1285,7 @@ def _package_status(version: str, record: Dict[str, Any]) -> Dict[str, Any]:
     """Whether ``version`` of the package is affected by one distro record, and the fixing version if any."""
     if not record["ranges"]:
         return {"affected": _strip_epoch(version) in record["versions"], "fixed_in": None}
-    affected, fixed_in = False, None
+    fixed_in = None
     for events in record["ranges"]:
         inside, fix = False, None
         for event in events:
@@ -1267,6 +1297,7 @@ def _package_status(version: str, record: Dict[str, Any]) -> Dict[str, Any]:
                 fix = event["fixed"]
                 if inside and compare_dpkg_versions(_with_epoch(version, fix), fix) >= 0:
                     inside = False
+                    fixed_in = fixed_in or fix  # this version was in the range and has the fix
                 elif inside:
                     break
             elif "last_affected" in event:
@@ -1278,8 +1309,7 @@ def _package_status(version: str, record: Dict[str, Any]) -> Dict[str, Any]:
         if inside:
             return {"affected": True, "fixed_in": fix if fix and compare_dpkg_versions(
                 _with_epoch(version, fix), fix) < 0 else None}
-        fixed_in = fixed_in or fix
-    return {"affected": affected, "fixed_in": fixed_in}
+    return {"affected": False, "fixed_in": fixed_in}
 
 
 def _find_release(distro: str, package: str, version: str) -> Tuple[Optional[str], Optional[str], List[str]]:
@@ -1808,6 +1838,16 @@ def _spamhaus_drop(version: int) -> Dict[str, Any]:
     cached = _drop_cache.get(version)
     if cached is not None:
         return cached
+    if _source_failures.get(f"drop{version}"):
+        raise SourceError("Spamhaus DROP unavailable; retrying in a few minutes")
+    try:
+        return _download_drop(version)
+    except SourceError:
+        _source_failures.set(f"drop{version}", True)
+        raise
+
+
+def _download_drop(version: int) -> Dict[str, Any]:
     resp = _http_get(SPAMHAUS_DROP_URLS[version], headers={"Accept": "application/json"}, timeout=30, retries=1)
     if resp.status_code != 200:
         raise SourceError(f"Spamhaus DROP returned HTTP {resp.status_code}")
@@ -2183,6 +2223,8 @@ def osint_nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limi
     if kev:
         summary["cisa_kev"] = kev
     summary["in_cisa_kev"] = bool(kev or summary.get("cisa_kev"))
+    if not kev and not kev_catalog_available():
+        summary["kev_unavailable"] = True
     epss = epss_lookup_many([cve_id]).get(cve_id)
     if epss:
         summary["epss"] = epss
@@ -2372,29 +2414,29 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
         seen.add(adv["cve_id"])
         advisories_added += 1
 
-    recent_checked = True
+    def add_for_review(cve: Dict[str, Any], reason: str) -> None:
+        seen.add(cve.get("id"))
+        entry = {**summarize_nvd_cve(cve, description_limit=400, reference_limit=0), "status": "UNANALYZED",
+                 "reason": reason}
+        if _description_covers(_english_description(cve), version):
+            entry["description_covers_this_version"] = True
+        entry.pop("references", None)
+        unanalyzed.append(entry)
+
+    recent_checked, fallback_checked = True, True
     try:
         for cve in _recent_unanalyzed_cves(name, products, keys, seen):
-            seen.add(cve.get("id"))
-            entry = {**summarize_nvd_cve(cve, description_limit=400, reference_limit=0), "status": "UNANALYZED",
-                     "reason": ("Published recently and not analysed by NVD yet, so its affected versions aren't "
-                                "checked. Read the description to see whether this version is covered.")}
-            if _description_covers(_english_description(cve), version):
-                entry["description_covers_this_version"] = True
-            entry.pop("references", None)
-            unanalyzed.append(entry)
-        if not candidates_total:
-            for cve in _keyword_fallback_cves(name, products, keys, seen):
-                seen.add(cve.get("id"))
-                entry = {**summarize_nvd_cve(cve, description_limit=400, reference_limit=0), "status": "UNANALYZED",
-                         "reason": ("Found by keyword: NVD files this CVE under a different product name, so this "
-                                    "version wasn't checked against it. Read the description to see whether it applies.")}
-                if _description_covers(_english_description(cve), version):
-                    entry["description_covers_this_version"] = True
-                entry.pop("references", None)
-                unanalyzed.append(entry)
+            add_for_review(cve, "Published recently and not analysed by NVD yet, so its affected versions aren't "
+                                "checked. Read the description to see whether this version is covered.")
     except SourceError:
         recent_checked = False
+    if not candidates_total:
+        try:
+            for cve in _keyword_fallback_cves(name, products, keys, seen):
+                add_for_review(cve, "Found by keyword: NVD files this CVE under a different product name, so this "
+                                    "version wasn't checked against it. Read the description to see whether it applies.")
+        except SourceError:
+            fallback_checked = False
 
     # A needs-review CVE the package's advisories cover, but not at this version, is ruled out by them.
     affecting = {a["cve_id"] for a in advisories}
@@ -2448,6 +2490,8 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
         "upgrade_to_at_least": _upgrade_with_review_note(minimum_safe_version(affected), unanalyzed),
         **({} if recent_checked else {"recent_cves_note": "The search for recent CVEs NVD hasn't analysed yet "
                                                           "failed, so very new advisories may be missing."}),
+        **({} if fallback_checked else {"keyword_fallback_note": "The keyword search for CVEs filed under another "
+                                                                 "product name failed."}),
         "patch_status_summary": {"fix_listed": len(affected) - len(no_fix), "no_fix_listed": len(no_fix)},
         "no_fix_listed_cves": no_fix,
         "affected_cve_ids": [v["cve_id"] for v in affected],  # every one, for osint_distro_patch_check
@@ -2581,7 +2625,7 @@ def _recent_unanalyzed_cves(name: str, products: List[Tuple[str, str]], keys: Op
     start = end.fromordinal(end.toordinal() - RECENT_CVE_DAYS)
     data = _nvd_get(NVD_CVE_URL, {"keywordSearch": term, "resultsPerPage": 200,
                                   "pubStartDate": start.strftime("%Y-%m-%dT00:00:00.000"),
-                                  "pubEndDate": end.strftime("%Y-%m-%dT%H:%M:%S.000")}, keys)
+                                  "pubEndDate": end.strftime("%Y-%m-%dT23:59:59.999")}, keys)
     return [cve for cve in (v.get("cve", {}) for v in data.get("vulnerabilities", []))
             if cve.get("vulnStatus") in _UNANALYZED_STATUSES and cve.get("id") not in seen
             and _description_is_about(_english_description(cve), term)]

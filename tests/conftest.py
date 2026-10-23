@@ -12,3 +12,6 @@ import osint_tools as t  # noqa: E402
 def no_exploitdb_download(monkeypatch):
     """Exploit-DB's index is a 10 MB download; tests that need it replace this again."""
     monkeypatch.setattr(t, "exploit_lookup_many", lambda cve_ids: {})
+    # No KEV download from unit tests, and no failure remembered from one test into the next.
+    monkeypatch.setattr(t, "kev_catalog_available", lambda: True)
+    monkeypatch.setattr(t, "_source_failures", t._TTLCache(900))
