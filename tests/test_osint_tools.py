@@ -794,3 +794,32 @@ def test_distro_release_given_must_contain_the_version(monkeypatch):
     r = t.osint_distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu", release="18.04")
     assert r["success"] is False and "isn't a package version in Ubuntu 18.04" in r["info"]
     assert "It matches Ubuntu 22.04" in r["info"]
+
+
+def test_device_firmware_cpes_are_included(monkeypatch):
+    # Real miss: SolarView Compact's CVEs are filed under contec:solarview_compact_firmware.
+    products = {"products": [{"cpe": {"cpeName": f"cpe:2.3:{kind}:contec:{name}:6.00:*:*:*:*:*:*:*"}}
+                             for kind, name in (("h", "solarview_compact"), ("o", "solarview_compact_firmware"))]}
+    monkeypatch.setattr(t, "_nvd_get", lambda url, params, keys: products)
+    assert t._resolve_products("SolarView Compact", None) == [("contec", "solarview_compact_firmware"),
+                                                             ("contec", "solarview_compact")]
+
+
+def test_search_term_uses_the_name_descriptions_use():
+    assert t._search_term("SolarView Compact", [("contec", "solarview_compact_firmware")]) == "solarview compact"
+    assert t._search_term("Apache httpd", [("apache", "http_server")]) == "apache http server"
+    assert t._search_term("Next.js", [("*", "next.js")]) == "next.js"
+
+
+def test_keyword_fallback_skips_cves_nvd_already_judged(monkeypatch):
+    def cve(cve_id, text, criteria):
+        return {"id": cve_id, "vulnStatus": "Analyzed", "descriptions": [{"lang": "en", "value": text}],
+                "configurations": [{"nodes": [{"cpeMatch": [{"criteria": criteria}]}]}]}
+    cves = [cve("CVE-2022-29303", "SolarView Compact ver.6.00 allows command injection",
+                "cpe:2.3:o:contec:sv-cpt-mc310_firmware:6.00:*:*:*:*:*:*:*"),
+            cve("CVE-2023-00001", "SolarView Compact before 8.00 allows XSS",
+                "cpe:2.3:o:contec:solarview_compact_firmware:*:*:*:*:*:*:*:*"),
+            cve("CVE-2023-00002", "Some router that mentions SolarView Compact", "cpe:2.3:o:x:y:*:*:*:*:*:*:*:*")]
+    monkeypatch.setattr(t, "_nvd_most_recent", lambda params, keys, limit: (3, cves))
+    found = t._keyword_fallback_cves("SolarView Compact", [("contec", "solarview_compact_firmware")], None, set())
+    assert [c["id"] for c in found] == ["CVE-2022-29303"]

@@ -2190,7 +2190,8 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
     affected, not_affected, unanalyzed = [], [], []
     seen: set = set()
     candidates_total, truncated = 0, False
-    page_size, max_pages = 500, 3
+    # NVD serves 100-record pages in seconds but often drops 500-record ones after minutes (seen with PHP 4.3.8).
+    page_size, max_pages = 100, 10
     try:
         for vendor, product in products:
             for page in range(max_pages):
@@ -2230,6 +2231,16 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
                 entry["description_covers_this_version"] = True
             entry.pop("references", None)
             unanalyzed.append(entry)
+        if not candidates_total:
+            for cve in _keyword_fallback_cves(name, products, keys, seen):
+                seen.add(cve.get("id"))
+                entry = {**summarize_nvd_cve(cve, description_limit=400, reference_limit=0), "status": "UNANALYZED",
+                         "reason": ("Found by keyword: NVD files this CVE under a different product name, so this "
+                                    "version wasn't checked against it. Read the description to see whether it applies.")}
+                if _description_covers(_english_description(cve), version):
+                    entry["description_covers_this_version"] = True
+                entry.pop("references", None)
+                unanalyzed.append(entry)
     except SourceError:
         recent_checked = False
 
@@ -2306,30 +2317,53 @@ _UNANALYZED_STATUSES = {"Received", "Awaiting Analysis", "Undergoing Analysis"}
 RECENT_CVE_DAYS = 90
 
 
-def _recent_unanalyzed_cves(name: str, products: List[Tuple[str, str]], keys: Optional[ApiKeys],
-                            seen: set) -> List[Dict[str, Any]]:
-    """Recent CVEs that mention the product but that NVD hasn't analysed (so they have no CPE data yet)."""
+def _search_term(name: str, products: List[Tuple[str, str]]) -> str:
+    """Words CVE descriptions use for the product: "next.js", "apache http server", or the user's own words."""
     vendor, product = products[0]
     words = product.replace("_", " ")
+    typed = _DAEMON_SUFFIXES.sub("", normalize_software_name(name))
     if " " not in words:
-        term = words  # "next.js", "gitlab", "php"
-    elif vendor != "*" and len(words.split()) <= 2 and vendor not in words:
-        term = f"{vendor} {words}"  # "apache http server"
-    else:
-        term = _DAEMON_SUFFIXES.sub("", normalize_software_name(name))  # long CPE names: use the user's words
-    _, cves = _nvd_most_recent({"keywordSearch": term}, keys, 40)
-    cutoff = datetime.now(timezone.utc).date().toordinal() - RECENT_CVE_DAYS
-    found = []
-    for cve in cves:
-        published = (cve.get("published") or "")[:10]
-        try:
-            recent = datetime.strptime(published, "%Y-%m-%d").date().toordinal() >= cutoff
-        except ValueError:
-            recent = False
-        if (recent and cve.get("vulnStatus") in _UNANALYZED_STATUSES and cve.get("id") not in seen
-                and _description_is_about(_english_description(cve), term)):
-            found.append(cve)
-    return found
+        return words  # "next.js", "gitlab", "php"
+    if words in typed:
+        return typed  # the user named the product as descriptions do ("solarview compact", "apache http server")
+    if vendor != "*" and len(words.split()) <= 2 and vendor not in words:
+        return f"{vendor} {words}"  # "apache http server"
+    return _DAEMON_SUFFIXES.sub("", normalize_software_name(name))  # long CPE names: use the user's words
+
+
+def _recent_unanalyzed_cves(name: str, products: List[Tuple[str, str]], keys: Optional[ApiKeys],
+                            seen: set) -> List[Dict[str, Any]]:
+    """Recent CVEs that mention the product but that NVD hasn't analysed (so they have no CPE data yet).
+
+    One request: NVD filters by publication date itself, which matters without a key (5 requests per 30 s).
+    """
+    term = _search_term(name, products)
+    end = datetime.now(timezone.utc)
+    start = end.fromordinal(end.toordinal() - RECENT_CVE_DAYS)
+    data = _nvd_get(NVD_CVE_URL, {"keywordSearch": term, "resultsPerPage": 200,
+                                  "pubStartDate": start.strftime("%Y-%m-%dT00:00:00.000"),
+                                  "pubEndDate": end.strftime("%Y-%m-%dT%H:%M:%S.000")}, keys)
+    return [cve for cve in (v.get("cve", {}) for v in data.get("vulnerabilities", []))
+            if cve.get("vulnStatus") in _UNANALYZED_STATUSES and cve.get("id") not in seen
+            and _description_is_about(_english_description(cve), term)]
+
+
+def _keyword_fallback_cves(name: str, products: List[Tuple[str, str]], keys: Optional[ApiKeys],
+                           seen: set) -> List[Dict[str, Any]]:
+    """When NVD has no CVEs for the product's CPE at all, the CVEs may be filed under another product name
+    (SolarView Compact's are under the firmware's model code). Find them by keyword instead."""
+    term = _search_term(name, products)
+    vendor = products[0][0]
+    _, cves = _nvd_most_recent({"keywordSearch": term}, keys, 50)
+
+    def judged_for_product(cve: Dict[str, Any]) -> bool:
+        # NVD already matched this CVE against the product's CPE and found this version unaffected.
+        return any(_cpe_product_matches(m.get("criteria", ""), v, p) for v, p in products
+                   for c in cve.get("configurations", []) or [] for n in c.get("nodes", []) or []
+                   for m in n.get("cpeMatch", []) or [])
+
+    return [cve for cve in cves if cve.get("id") not in seen and cve.get("vulnStatus") != "Rejected"
+            and not judged_for_product(cve) and _description_is_about(_english_description(cve), term, vendor)]
 
 
 # How CVE descriptions usually open before naming the affected product.
@@ -2337,11 +2371,13 @@ _DESCRIPTION_LEADS = re.compile(r"^(?:an? (?:issue|vulnerability|flaw|security i
                                 r"(?:discovered|found|identified|reported)? ?in |in |the )", re.IGNORECASE)
 
 
-def _description_is_about(description: str, term: str) -> bool:
+def _description_is_about(description: str, term: str, vendor: str = "*") -> bool:
     """Is the CVE about ``term`` itself? Its description opens with the product name ("GitLab has...",
     "In PHP versions..."), not with another product that only mentions it ("PhpSpreadsheet is a pure PHP
     library", "NextAuth.js provides authentication for Next.js")."""
     text = _DESCRIPTION_LEADS.sub("", description.strip(), count=1)
+    if vendor != "*" and text.lower().startswith(vendor.lower() + " ") and not term.lower().startswith(vendor.lower()):
+        text = text[len(vendor) + 1:]  # "CONTEC SolarView Compact ..." is about "solarview compact"
     return mentions_whole_words(text[:len(term) + 1], term) and text.lower().startswith(term.split()[0].lower())
 
 
@@ -2379,9 +2415,12 @@ def _resolve_products(name: str, keys: Optional[ApiKeys]) -> List[Tuple[str, str
         cpe = _parse_cpe(item.get("cpe", {}).get("cpeName", ""))
         pair = (cpe["vendor"], cpe["product"])
         counts[pair] = counts.get(pair, 0) + 1
-    exact = [p for p in counts if p[1] == guess]
+    # Devices often have a hardware CPE and a firmware CPE, and the CVEs are usually filed under the firmware
+    # (SolarView Compact's are under solarview_compact_firmware), so include it.
+    exact = [p for p in counts if p[1] in (guess, guess + "_firmware")]
     if exact:
-        return sorted(exact, key=lambda p: -counts[p])[:2]
+        firmware = [p for p in exact if p[1].endswith("_firmware")]
+        return (firmware + sorted((p for p in exact if p not in firmware), key=lambda p: -counts[p]))[:2]
     if len(wanted) < 2:
         # A single word ("all", "server", "dahua") is too ambiguous to match partially; it must be the exact product.
         return []
