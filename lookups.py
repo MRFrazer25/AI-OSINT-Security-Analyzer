@@ -68,6 +68,7 @@ KEY_SIGNUP_URLS = {
     "greynoise": "https://viz.greynoise.io/signup",
 }
 
+
 @dataclass(frozen=True)
 class ApiKeys:
     """API keys for a single analysis run. Never stored in module globals."""
@@ -174,6 +175,8 @@ _osv_cache = _TTLCache(ttl_seconds=6 * 3600, maxsize=64, max_bytes=16 * 1024 * 1
 # NVD allows 5 requests per 30 s without a key (per IP) and 50 with one.
 _nvd_keyless_limiter = _RateLimiter(max_calls=5, period=30.0)
 _nvd_keyed_limiter = _RateLimiter(max_calls=50, period=30.0)
+
+
 class SourceError(Exception):
     """A data source could not be reached or returned an unusable response."""
 
@@ -540,6 +543,7 @@ def assess_cve_for_version(cve: Dict[str, Any], vendor: str, product: str, versi
                 verdict["fixed_after"] = match["versionEndIncluding"]
             verdict["patch_status"] = patch_status(verdict)
             return verdict
+
     def nearness(match: Dict[str, Any]) -> int:
         """How many leading version parts a range's bounds share with ``version``."""
         wanted = _version_tokens(version)
@@ -1265,7 +1269,7 @@ def _find_release(distro: str, package: str, version: str) -> Tuple[Optional[str
 
 
 def distro_patch_check(package: str, package_version: str, distro: str, release: Optional[str] = None,
-                             cve_ids: Optional[Sequence[str]] = None, result_limit: int = 15) -> Dict[str, Any]:
+                       cve_ids: Optional[Sequence[str]] = None, result_limit: int = 15) -> Dict[str, Any]:
     """Check a Debian/Ubuntu package version against the distro's own fix data, so backported fixes count."""
     distro_key = (distro or "").strip().lower()
     if distro_key not in DISTRO_RELEASES:
@@ -1860,7 +1864,8 @@ def _sans_isc(ip: str) -> Dict[str, Any]:
 
 
 def threat_lists_check(ip_address: str, keys: Optional[ApiKeys] = None) -> Dict[str, Any]:
-    """Keyless reputation: Spamhaus DROP (criminal or hijacked networks) and GreyNoise (internet scanners)."""
+    """Keyless reputation: Spamhaus DROP (criminal or hijacked networks) and GreyNoise (internet scanners),
+    with SANS ISC (DShield) when GreyNoise can't answer."""
     ok, err = validate_public_ip(ip_address or "")
     if not ok:
         return {"tool": "threat_lists", "error": err}
@@ -2120,7 +2125,7 @@ def abuseipdb_check(ip_address: str, keys: ApiKeys, max_age_days: int = 90) -> D
 
 
 def nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limit: int = 5,
-                     config_limit: int = 5) -> Dict[str, Any]:
+               config_limit: int = 5) -> Dict[str, Any]:
     """Full NVD record for one CVE, enriched with CISA KEV status and EPSS."""
     cve_id = (cve_id or "").strip().upper()
     if not is_valid_cve(cve_id):
@@ -2207,8 +2212,8 @@ def cve_search(search_term: str, keys: Optional[ApiKeys] = None, result_limit: i
 
 
 def cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
-                         software_list: Optional[Sequence[str]] = None, kev_limit: int = 10,
-                         cve_id: Optional[str] = None) -> Dict[str, Any]:
+                   software_list: Optional[Sequence[str]] = None, kev_limit: int = 10,
+                   cve_id: Optional[str] = None) -> Dict[str, Any]:
     """Check CVE IDs and/or product names against CISA's Known Exploited Vulnerabilities catalog."""
     def as_list(value: Any) -> List[str]:
         if value is None:
@@ -2263,8 +2268,8 @@ def cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
 
 
 def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiKeys] = None,
-                                               version: Optional[str] = None, result_limit: int = 10,
-                                               not_affected_limit: int = 5) -> Dict[str, Any]:
+                                         version: Optional[str] = None, result_limit: int = 10,
+                                         not_affected_limit: int = 5) -> Dict[str, Any]:
     """Find CVEs whose NVD CPE configuration actually includes this exact product version."""
     name = " ".join(str(software_name or "").split())[:80]
     if not name:

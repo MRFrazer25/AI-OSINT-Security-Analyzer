@@ -215,7 +215,7 @@ def test_falls_back_when_default_model_is_rejected():
     events = []
     client = RejectingClient([_response(text="report")])
     result = ai.run_agent("CVE-2021-44228", ApiKeys(), "Quick Scan",
-                                on_event=lambda kind, payload: events.append(kind), client=client)
+                          on_event=lambda kind, payload: events.append(kind), client=client)
     assert result.report == "report"
     assert result.model == ai.FALLBACK_MODEL
     assert "model_fallback" in events
@@ -242,7 +242,7 @@ def test_final_report_retries_without_tool_choice():
 def test_user_selected_model_is_used_with_its_token_limit():
     client = FakeClient([_response(text="report")])
     result = ai.run_agent("CVE-2021-44228", ApiKeys(), "Quick Scan", client=client,
-                                model="command-a-reasoning-08-2025")
+                          model="command-a-reasoning-08-2025")
     assert result.model == "command-a-reasoning-08-2025"
     assert client.requests[0]["model"] == "command-a-reasoning-08-2025"
     assert client.requests[0]["max_tokens"] == ai.AVAILABLE_MODELS["command-a-reasoning-08-2025"][1]
@@ -277,7 +277,7 @@ def test_kev_counts_do_not_depend_on_which_tools_the_model_called():
     shodan = ("shodan_search", {"tool": "shodan", "success": True, "cisa_kev_product_matches": {
         "Dahua": {"entries": [{"cve_id": "CVE-2021-33044"}, {"cve_id": "CVE-2021-33045"}]}}})
     lookup = ("cisa_kev_check", {"tool": "cisa_kev", "success": True,
-                                       "cves_in_kev": ["CVE-2021-33044", "CVE-2021-33045"]})
+                                 "cves_in_kev": ["CVE-2021-33044", "CVE-2021-33045"]})
     assert _summary([shodan]) == _summary([shodan, lookup])
     assert _summary([shodan, lookup])["cisa_kev_confirmed"] == []
 
@@ -298,7 +298,7 @@ def test_key_facts_are_built_from_tool_data_without_the_model():
         "cisa_kev_product_matches": {"Dahua Rtsp Server": {"entries": [
             {"cve_id": "CVE-2021-33044", "epss": {"epss": 0.99987, "percentile": 0.9998}}]}}})
     vt = ("virustotal_check", {"tool": "virustotal", "success": True, "malicious": 0, "suspicious": 0,
-                                     "total_engines": 91, "threat_level": "NONE"})
+                               "total_engines": 91, "threat_level": "NONE"})
     failed = ("abuseipdb_check", {"tool": "abuseipdb", "error": "AbuseIPDB API key not configured"})
     result = ai.AgentResult(target=ai.classify_target("8.8.8.8"), report="", complexity="Quick Scan", model="m",
                             tool_calls=[ai.ToolCallRecord(n, {}, 1, "t", 1, r) for n, r in (shodan, vt, failed)])
@@ -315,7 +315,7 @@ def test_key_facts_are_built_from_tool_data_without_the_model():
 def test_vendor_wide_kev_checks_are_not_counted_as_related():
     # Real noise: on 8.8.8.8 the model checked "Google", which listed Chrome/Pixel CVEs as related to a DNS server.
     shodan = ("shodan_search", {"tool": "shodan", "success": True,
-                                      "discovered_software": [{"name": "scaffolding on HTTPServer2"}]})
+                                "discovered_software": [{"name": "scaffolding on HTTPServer2"}]})
     google = ("cisa_kev_check", {"tool": "cisa_kev", "success": True, "software_matches": {
         "Google": {"most_recent": [{"cve_id": "CVE-2026-87491"}]}}})
     assert _summary([shodan, google])["cisa_kev_related"] == []
@@ -364,7 +364,7 @@ def test_key_facts_show_patch_status_and_newly_exploited_cves():
 
 def test_no_newly_exploited_fact_without_recent_kev_entries():
     nvd = ("nvd_lookup", {"tool": "nvd", "success": True, "cve_id": "CVE-2021-44228", "severity": "CRITICAL",
-                                "in_cisa_kev": True, "cisa_kev": {"days_in_kev": 1400, "recently_added_to_kev": False}})
+                          "in_cisa_kev": True, "cisa_kev": {"days_in_kev": 1400, "recently_added_to_kev": False}})
     result = ai.AgentResult(target=ai.classify_target("CVE-2021-44228"), report="", complexity="Quick Scan",
                             model="m", tool_calls=[ai.ToolCallRecord(nvd[0], {}, 1, "t", 1, nvd[1])])
     labels = [f["label"] for f in ai.build_key_facts(result)]
@@ -414,8 +414,8 @@ def test_distro_backport_overrides_an_nvd_version_match():
 
 def test_confirmed_kev_says_when_a_backport_could_not_be_checked():
     shodan = ("shodan_search", {"tool": "shodan", "success": True, "data_source": "Shodan InternetDB",
-                                      "operating_system": "canonical ubuntu linux", "backport_note": "backports",
-                                      "discovered_software": [{"name": "apache http server", "version": "2.4.7"}]})
+                                "operating_system": "canonical ubuntu linux", "backport_note": "backports",
+                                "discovered_software": [{"name": "apache http server", "version": "2.4.7"}]})
     version = ("version_specific_vulnerability_check", {
         "tool": "version_check", "success": True, "software": "apache http server", "version": "2.4.7",
         "affected_cves": [{"cve_id": "CVE-2021-40438", "severity": "CRITICAL", "in_cisa_kev": True,
@@ -438,8 +438,8 @@ def test_key_facts_show_package_advisories_exploits_and_sans():
         "affected_cves": [{"cve_id": "GHSA-673q-mjm6-r5xr", "severity": "CRITICAL", "fixed_in": "16.4.1",
                            "source": "GitHub Advisory via OSV.dev", "public_exploit": {"count": 2, "verified": True}}]})
     lists = ("threat_lists_check", {"tool": "threat_lists", "success": True, "spamhaus_drop": {"listed": False},
-                                          "greynoise": {"error": "GreyNoise limit reached"},
-                                          "sans_isc": {"meaning": "no attack reports from DShield sensors"}})
+                                    "greynoise": {"error": "GreyNoise limit reached"},
+                                    "sans_isc": {"meaning": "no attack reports from DShield sensors"}})
     result = ai.AgentResult(target=ai.classify_target("Next.js 16.4.0"), report="", complexity="Quick Scan", model="m",
                              tool_calls=[ai.ToolCallRecord(n, {}, 1, "t", 1, r) for n, r in (version, lists)])
     facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}

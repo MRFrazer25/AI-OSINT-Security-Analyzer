@@ -495,7 +495,7 @@ JAMMY = {"Ubuntu:22.04:LTS": {"versions": ["8.9p1-3ubuntu0.6", "8.9p1-3ubuntu0.1
 def test_distro_check_separates_backported_fixes_from_open_cves(monkeypatch):
     _fake_osv(monkeypatch, JAMMY)
     r = t.distro_patch_check("openssh", "8.9p1-3ubuntu0.6", "Ubuntu",
-                                   cve_ids=["CVE-2024-6387", "CVE-2023-48795", "CVE-2099-0001"])
+                             cve_ids=["CVE-2024-6387", "CVE-2023-48795", "CVE-2099-0001"])
     assert r["release"] == "22.04" and r["osv_ecosystem"] == "Ubuntu:22.04:LTS"
     assert r["fixed_by_backport"] == ["CVE-2023-48795"]
     assert r["still_affects_package"] == ["CVE-2024-6387"]
@@ -506,7 +506,7 @@ def test_distro_check_separates_backported_fixes_from_open_cves(monkeypatch):
     assert unfixed["package_fix"] == "Ubuntu has not released a fix yet"
     # After the update, the same CVE counts as fixed by the backport.
     assert t.distro_patch_check("openssh", "8.9p1-3ubuntu0.10", "Ubuntu",
-                                      cve_ids=["CVE-2024-6387"])["fixed_by_backport"] == ["CVE-2024-6387"]
+                                cve_ids=["CVE-2024-6387"])["fixed_by_backport"] == ["CVE-2024-6387"]
 
 
 def test_distro_release_must_be_unambiguous(monkeypatch):
@@ -820,7 +820,7 @@ def test_release_records_are_merged_across_standard_and_pro(monkeypatch):
          "versions": [], "availability": "Available with Ubuntu Pro"}]}
     _fake_osv(monkeypatch, {"Ubuntu:14.04:LTS": standard, "Ubuntu:Pro:14.04:LTS": pro})
     r = t.distro_patch_check("openssh", "6.6.1p1-2ubuntu2.13", "Ubuntu",
-                                   cve_ids=["CVE-2016-6210", "CVE-2023-48795"])
+                             cve_ids=["CVE-2016-6210", "CVE-2023-48795"])
     assert r["release"] == "14.04" and r["package_version"] == "6.6p1-2ubuntu2.13"
     assert r["fixed_by_backport"] == ["CVE-2016-6210"] and r["still_affects_package"] == ["CVE-2023-48795"]
     assert "Ubuntu Pro" in r["update_package_to_at_least"]["note"]

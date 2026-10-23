@@ -22,14 +22,15 @@ from lookups import KEY_SIGNUP_URLS, ApiKeys, classify_target
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 RUN_COOLDOWN_SECONDS = 15
-# name -> (service, env var, purpose, required)
+# name -> (service, purpose, required)
 KEY_FIELDS = {
-    "cohere": ("Cohere", "COHERE_API_KEY", "runs the AI agent", True),
-    "shodan": ("Shodan", "SHODAN_API_KEY", "exposed services and versions", False),
-    "virustotal": ("VirusTotal", "VIRUSTOTAL_API_KEY", "malicious/suspicious detections", False),
-    "abuseipdb": ("AbuseIPDB", "ABUSEIPDB_API_KEY", "IP abuse reports", False),
-    "nvd": ("NVD", "NVD_API_KEY", "faster CVE lookups", False),
-    "greynoise": ("GreyNoise", "GREYNOISE_API_KEY", "more scanner lookups than the 10 a day allowed without one (work-email accounts only)", False),
+    "cohere": ("Cohere", "runs the AI agent", True),
+    "shodan": ("Shodan", "exposed services and versions", False),
+    "virustotal": ("VirusTotal", "malicious/suspicious detections", False),
+    "abuseipdb": ("AbuseIPDB", "IP abuse reports", False),
+    "nvd": ("NVD", "faster CVE lookups", False),
+    "greynoise": ("GreyNoise", "more scanner lookups than the 10 a day allowed without one (work-email "
+                  "accounts only)", False),
 }
 # Which key a tool depends on, so missing-key errors can link to the sign-up page.
 TOOL_KEYS = {"shodan_search": "shodan", "virustotal_check": "virustotal",
@@ -88,7 +89,8 @@ st.session_state.setdefault("report_data", None)
 st.session_state.setdefault("last_run", 0.0)
 
 st.title("AI Vulnerability Exposure Analyzer")
-st.markdown("AI-driven security analysis of IPs, domains, CVEs and software versions, powered by Cohere Command models.")
+st.markdown("AI-driven checks of IPs, domains, CVEs and software versions for confirmed vulnerabilities and "
+            "exposure, powered by Cohere Command models.")
 
 with st.sidebar:
     st.markdown("## How to use")
@@ -132,14 +134,15 @@ Without a Shodan key, Shodan's free [InternetDB](https://internetdb.shodan.io/) 
     )
     st.caption("This product uses data from the NVD API but is not endorsed or certified by the NVD. "
                "Not affiliated with or endorsed by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA, FIRST, "
-               "Spamhaus, GreyNoise, SANS, Exploit-DB, GitHub or the internet registries. Spamhaus DROP data "
-               "(c) The Spamhaus Project. SANS ISC data is CC BY-NC-SA 4.0.")
+               "MITRE, Spamhaus, GreyNoise, SANS, OffSec (Exploit-DB), GitHub, Google (OSV.dev), Sectigo (crt.sh), "
+               "SSLMate (Cert Spotter) or the internet registries. Spamhaus DROP data (c) The Spamhaus Project. "
+               "SANS ISC data is CC BY-NC-SA 4.0. CVE® is a registered trademark of The MITRE Corporation.")
 
 # --- API keys ---------------------------------------------------------------
 with st.expander("API Keys Configuration", expanded=not effective_keys().cohere):
     st.markdown("**Get your keys (all have free tiers):**  \n" + "  \n".join(
         f"- {key_link(n)}: {'required' if req else 'optional'}, {purpose}"
-        for n, (_, _, purpose, req) in KEY_FIELDS.items()
+        for n, (_, purpose, req) in KEY_FIELDS.items()
     ))
     st.caption(
         "Keys you enter are kept only in this browser session's server-side memory. They are never written "
@@ -148,7 +151,7 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
     with st.form("api_keys_form", clear_on_submit=True):
         cols = st.columns(2)
         entered = {}
-        for i, (name, (service, _, purpose, required)) in enumerate(KEY_FIELDS.items()):
+        for i, (name, (service, purpose, required)) in enumerate(KEY_FIELDS.items()):
             if st.session_state.user_keys.get(name):
                 placeholder = "Saved for this session (leave blank to keep)"
             else:
@@ -178,7 +181,7 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
     for start in range(0, len(names), 3):  # rows of three, so service names don't wrap mid-word
         for col, name in zip(st.columns(3), names[start:start + 3]):
             status = ("Configured" if getattr(keys_now, name)
-                      else "Missing (required)" if KEY_FIELDS[name][3] else "Not set (optional)")
+                      else "Missing (required)" if KEY_FIELDS[name][2] else "Not set (optional)")
             col.markdown(f"**{key_link(name)}**  \n{status}")
 
 # --- Target input -------------------------------------------------------------
@@ -315,5 +318,6 @@ st.caption(
     "can be wrong. Verify before acting.  \n"
     "Testing so far has focused on common software and devices, so results for less common products may be "
     "less reliable. If a result looks wrong, please "
-    "[open an issue](https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer/issues) with the target you used."
+    "[open an issue](https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer/issues) with the target "
+    "you used."
 )
