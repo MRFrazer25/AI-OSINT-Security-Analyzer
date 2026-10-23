@@ -40,7 +40,7 @@ Private, loopback, link-local, CGNAT and other non-public addresses are rejected
 | [AbuseIPDB](https://www.abuseipdb.com/) | Abuse reports for IPs | Optional | [abuseipdb.com/register](https://www.abuseipdb.com/register) |
 | [NVD](https://nvd.nist.gov/) | CVE details and affected versions | Optional (raises rate limit) | [nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key) |
 | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), [FIRST EPSS](https://www.first.org/epss/) | Exploitation status / probability | Not needed | n/a |
-| [GreyNoise](https://www.greynoise.io/) | Internet scanners and known business services | Optional (10 lookups a day without one; a free key needs a business email) | [viz.greynoise.io/signup](https://viz.greynoise.io/signup) |
+| [GreyNoise](https://www.greynoise.io/) | Internet scanners and known business services | Optional (10 lookups a day without one, then SANS ISC; keys only come with work-email accounts, not Gmail or similar) | [viz.greynoise.io/signup](https://viz.greynoise.io/signup) |
 | [OSV.dev](https://osv.dev/) | Ubuntu and Debian fixes for installed packages | Not needed | n/a |
 | Internet registries (RDAP) | Who an IP's network is registered to | Not needed | n/a |
 | [Spamhaus DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/) | Hijacked or criminal networks | Not needed (downloaded at most once a day, as Spamhaus asks) | n/a |

@@ -30,7 +30,7 @@ KEY_FIELDS = {
     "virustotal": ("VirusTotal", "VIRUSTOTAL_API_KEY", "malicious/suspicious detections", False),
     "abuseipdb": ("AbuseIPDB", "ABUSEIPDB_API_KEY", "IP abuse reports", False),
     "nvd": ("NVD", "NVD_API_KEY", "faster CVE lookups", False),
-    "greynoise": ("GreyNoise", "GREYNOISE_API_KEY", "more scanner lookups than the 10 a day allowed without one", False),
+    "greynoise": ("GreyNoise", "GREYNOISE_API_KEY", "more scanner lookups than the 10 a day allowed without one (work-email accounts only)", False),
 }
 # Which key a tool depends on, so missing-key errors can link to the sign-up page.
 TOOL_KEYS = {"osint_shodan_search": "shodan", "osint_virustotal_check": "virustotal",
