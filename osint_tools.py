@@ -1029,13 +1029,14 @@ def resolve_domain(domain: str) -> Dict[str, Any]:
 # Distro packages (backported fixes), from the distros' own data via OSV.dev
 # ---------------------------------------------------------------------------
 
-# Releases to try, newest first. Each lists its OSV ecosystems; Ubuntu moves releases to "Pro" when standard
-# support ends, and 20.04 currently has records under both.
+# Releases to try, newest first. Each lists its OSV ecosystems. Ubuntu moves releases to "Pro" when standard
+# support ends and keeps the older fixes under the standard name, so both are read and merged.
 DISTRO_RELEASES: Dict[str, List[Tuple[str, List[str]]]] = {
     "ubuntu": [("26.04", ["Ubuntu:26.04:LTS"]), ("25.10", ["Ubuntu:25.10"]), ("24.04", ["Ubuntu:24.04:LTS"]),
                ("22.04", ["Ubuntu:22.04:LTS"]), ("20.04", ["Ubuntu:20.04:LTS", "Ubuntu:Pro:20.04:LTS"]),
-               ("18.04", ["Ubuntu:Pro:18.04:LTS"]), ("16.04", ["Ubuntu:Pro:16.04:LTS"]),
-               ("14.04", ["Ubuntu:Pro:14.04:LTS"])],
+               ("18.04", ["Ubuntu:18.04:LTS", "Ubuntu:Pro:18.04:LTS"]),
+               ("16.04", ["Ubuntu:16.04:LTS", "Ubuntu:Pro:16.04:LTS"]),
+               ("14.04", ["Ubuntu:14.04:LTS", "Ubuntu:Pro:14.04:LTS"])],
     "debian": [("14", ["Debian:14"]), ("13", ["Debian:13"]), ("12", ["Debian:12"]), ("11", ["Debian:11"]),
                ("10", ["Debian:10"])],
 }
@@ -1150,6 +1151,30 @@ def _osv_package(ecosystem: str, package: str) -> Dict[str, Any]:
     return summary
 
 
+def _release_data(ecosystems: List[str], package: str) -> Dict[str, Any]:
+    """One release's records for a package, merged across its OSV ecosystems (standard and Pro)."""
+    parts = [_osv_package(e, package) for e in ecosystems]
+    return {"versions": sorted({v for p in parts for v in p["versions"]}),
+            "records": [r for p in parts for r in p["records"]]}
+
+
+def _match_package_version(version: str, versions: List[str]) -> Optional[str]:
+    """The distro's own spelling of ``version``: exact, or the one with the same revision and major.minor.
+
+    OpenSSH's banner says "6.6.1p1 Ubuntu-2ubuntu2.13" while Ubuntu's package is "6.6p1-2ubuntu2.13".
+    """
+    plain = _strip_epoch(version)
+    if plain in versions:
+        return plain
+    upstream, sep, revision = plain.rpartition("-")
+    major_minor = re.match(r"\d+\.\d+", upstream)
+    if not sep or not major_minor:
+        return None
+    matches = [v for v in versions if v.rpartition("-")[2] == revision
+               and re.match(re.escape(major_minor.group()) + r"(?!\d)", v.rpartition("-")[0])]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _with_epoch(version: str, reference: str) -> str:
     """Banners drop the epoch ("1:" in "1:8.9p1-3ubuntu0.6"); borrow it from the version being compared."""
     if ":" in version or ":" not in reference:
@@ -1198,7 +1223,7 @@ def _find_release(distro: str, package: str, version: str) -> Tuple[Optional[str
     found: List[Tuple[str, str]] = []
     for release, ecosystems in DISTRO_RELEASES[distro]:
         for ecosystem in ecosystems:
-            if _strip_epoch(version) in _osv_package(ecosystem, package)["versions"]:
+            if _match_package_version(version, _osv_package(ecosystem, package)["versions"]):
                 found.append((release, ecosystem))
                 break
     if len(found) == 1:
@@ -1228,7 +1253,7 @@ def osint_distro_patch_check(package: str, package_version: str, distro: str, re
                 known = ", ".join(r for r, _ in DISTRO_RELEASES[distro_key])
                 return {"tool": "distro_patch_check", "error": f"Unknown {name} release {release!r} (known: {known})"}
             ecosystem = next((e for e in ecosystems
-                              if _strip_epoch(version) in _osv_package(e, package)["versions"]), None)
+                              if _match_package_version(version, _osv_package(e, package)["versions"])), None)
             if ecosystem is None:
                 found, _, candidates = _find_release(distro_key, package, version)
                 where = (f"It matches {name} {found}." if found else
@@ -1247,9 +1272,13 @@ def osint_distro_patch_check(package: str, package_version: str, distro: str, re
                         "package_version": version,
                         "info": f"Can't tell which {name} release this is: {package} {version} {why}. "
                                 "Pass release if you know it."}
-        data = _osv_package(ecosystem, package)
+        data = _release_data(dict(DISTRO_RELEASES[distro_key])[release], package)
+        ecosystem = ", ".join(e for e in dict(DISTRO_RELEASES[distro_key])[release]
+                              if _osv_package(e, package)["records"]) or ecosystem
     except SourceError as exc:
         return {"tool": "distro_patch_check", "error": str(exc)}
+    given = version
+    version = _match_package_version(version, data["versions"]) or version
 
     open_cves: Dict[str, Dict[str, Any]] = {}
     open_fix: Dict[str, Optional[str]] = {}  # CVE -> package version that fixes it, for CVEs still open
@@ -1276,6 +1305,8 @@ def osint_distro_patch_check(package: str, package_version: str, distro: str, re
         "osv_ecosystem": ecosystem,
         "package": package,
         "package_version": version,
+        **({"package_version_note": f"{given} (from the banner) is {name}'s package {version}"}
+           if version != _strip_epoch(given) else {}),
     }
     if ids:
         checked = {}
@@ -1531,7 +1562,9 @@ def osint_shodan_search(target: str, keys: ApiKeys, banner_limit: int = 200) -> 
     for item in host.get("data", []) or []:
         if not item.get("port"):
             continue
-        product, version = item.get("product"), item.get("version")
+        # Shodan's version strings can end in a line break, sometimes written out literally as "\r\n".
+        product, version = (" ".join(_clean_banner(str(item[k]).replace("\\r", " ").replace("\\n", " "), 80).split())
+                            if item.get(k) else None for k in ("product", "version"))
         server_header = _banner_server_header(item.get("data", ""))
         distro_package = distro_package_from_banner(item.get("data", ""))
         if distro_package:
@@ -1750,7 +1783,7 @@ def _greynoise(ip: str, keys: ApiKeys) -> Dict[str, Any]:
     elif noise:
         meaning = f"seen scanning the internet; GreyNoise classifies it as {data.get('classification') or 'unknown'}"
     else:
-        meaning = "not seen scanning the internet and not a known business service"
+        meaning = "not seen scanning the internet (GreyNoise community data)"
     return {"noise": noise, "riot": riot, "classification": data.get("classification"),
             "name": _clean_banner(str(data.get("name") or ""), 80) or None,
             "last_seen": data.get("last_seen"), "meaning": meaning}

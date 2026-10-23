@@ -823,3 +823,40 @@ def test_keyword_fallback_skips_cves_nvd_already_judged(monkeypatch):
     monkeypatch.setattr(t, "_nvd_most_recent", lambda params, keys, limit: (3, cves))
     found = t._keyword_fallback_cves("SolarView Compact", [("contec", "solarview_compact_firmware")], None, set())
     assert [c["id"] for c in found] == ["CVE-2022-29303"]
+
+
+def test_banner_versions_match_the_distros_spelling():
+    # Real miss: OpenSSH's banner says 6.6.1p1 while Ubuntu 14.04's package is 6.6p1-2ubuntu2.13.
+    versions = ["6.6p1-2ubuntu2.12", "6.6p1-2ubuntu2.13", "6.6p1-2ubuntu2.13+esm1"]
+    assert t._match_package_version("6.6.1p1-2ubuntu2.13", versions) == "6.6p1-2ubuntu2.13"
+    assert t._match_package_version("6.61p1-2ubuntu2.13", versions) is None  # different major.minor
+    assert t._match_package_version("6.6p1-2ubuntu2.12", versions) == "6.6p1-2ubuntu2.12"
+
+
+def test_release_records_are_merged_across_standard_and_pro(monkeypatch):
+    standard = {"versions": ["6.6p1-2ubuntu2.8"], "records": [
+        {"cve_id": "CVE-2016-6210", "ranges": [[{"introduced": "0"}, {"fixed": "1:6.6p1-2ubuntu2.8"}]], "versions": []}]}
+    pro = {"versions": ["6.6p1-2ubuntu2.13", "6.6p1-2ubuntu2.13+esm4"], "records": [
+        {"cve_id": "CVE-2023-48795", "ranges": [[{"introduced": "0"}, {"fixed": "1:6.6p1-2ubuntu2.13+esm4"}]],
+         "versions": [], "availability": "Available with Ubuntu Pro"}]}
+    _fake_osv(monkeypatch, {"Ubuntu:14.04:LTS": standard, "Ubuntu:Pro:14.04:LTS": pro})
+    r = t.osint_distro_patch_check("openssh", "6.6.1p1-2ubuntu2.13", "Ubuntu",
+                                   cve_ids=["CVE-2016-6210", "CVE-2023-48795"])
+    assert r["release"] == "14.04" and r["package_version"] == "6.6p1-2ubuntu2.13"
+    assert r["fixed_by_backport"] == ["CVE-2016-6210"] and r["still_affects_package"] == ["CVE-2023-48795"]
+    assert "Ubuntu Pro" in r["update_package_to_at_least"]["note"]
+
+
+def test_shodan_versions_drop_line_breaks(monkeypatch):
+    # Real output: Shodan returned "6.6.1p1 Ubuntu 2ubuntu2.13\r\n", with the \r\n written out literally.
+    class FakeShodan:
+        def __init__(self, key):
+            pass
+
+        def host(self, ip):
+            return {"data": [{"port": 22, "product": "OpenSSH", "version": r"6.6.1p1 Ubuntu 2ubuntu2.13\r\n"},
+                             {"port": 80, "product": "Apache", "version": "2.4.7\r\n"}], "ports": [22, 80]}
+    monkeypatch.setattr(t.shodan, "Shodan", FakeShodan)
+    monkeypatch.setattr(t, "kev_matches_for_software", lambda names: {})
+    services = t.osint_shodan_search("45.33.32.156", t.ApiKeys(shodan="k"))["services"]
+    assert [s["version"] for s in services] == ["6.6.1p1 Ubuntu 2ubuntu2.13", "2.4.7"]
