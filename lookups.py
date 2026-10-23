@@ -2338,30 +2338,38 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
     # NVD serves 100-record pages in seconds but often drops 500-record ones after minutes (seen with PHP 4.3.8).
     page_size, max_pages = 100, 10
     try:
-        for vendor, product in products:
-            for page in range(max_pages):
-                data = _nvd_get(NVD_CVE_URL, {
-                    "virtualMatchString": f"cpe:2.3:*:{vendor}:{product}",
-                    "versionStart": version, "versionStartType": "including",
-                    "versionEnd": version, "versionEndType": "including",
-                    "resultsPerPage": page_size, "startIndex": page * page_size,
-                }, keys)
-                total = int(data.get("totalResults", 0))
-                for wrapper in data.get("vulnerabilities", []):
-                    cve = wrapper.get("cve", {})
-                    if cve.get("vulnStatus") == "Rejected" or cve.get("id") in seen:
-                        continue
-                    seen.add(cve.get("id"))
-                    verdict = assess_cve_for_version(cve, vendor, product, version)
-                    entry = {**summarize_nvd_cve(cve, description_limit=250, reference_limit=0), **verdict}
-                    entry.pop("references", None)
-                    buckets = {"AFFECTED": affected, "NOT_AFFECTED": not_affected}
-                    buckets.get(verdict["status"], unanalyzed).append(entry)
-                if (page + 1) * page_size >= total:
-                    break
-            else:
-                truncated = True
-            candidates_total += total
+        for attempt in range(2):
+            for vendor, product in products:
+                for page in range(max_pages):
+                    data = _nvd_get(NVD_CVE_URL, {
+                        "virtualMatchString": f"cpe:2.3:*:{vendor}:{product}",
+                        "versionStart": version, "versionStartType": "including",
+                        "versionEnd": version, "versionEndType": "including",
+                        "resultsPerPage": page_size, "startIndex": page * page_size,
+                    }, keys)
+                    total = int(data.get("totalResults", 0))
+                    for wrapper in data.get("vulnerabilities", []):
+                        cve = wrapper.get("cve", {})
+                        if cve.get("vulnStatus") == "Rejected" or cve.get("id") in seen:
+                            continue
+                        seen.add(cve.get("id"))
+                        verdict = assess_cve_for_version(cve, vendor, product, version)
+                        entry = {**summarize_nvd_cve(cve, description_limit=250, reference_limit=0), **verdict}
+                        entry.pop("references", None)
+                        buckets = {"AFFECTED": affected, "NOT_AFFECTED": not_affected}
+                        buckets.get(verdict["status"], unanalyzed).append(entry)
+                    if (page + 1) * page_size >= total:
+                        break
+                else:
+                    truncated = True
+                candidates_total += total
+            if candidates_total or attempt:
+                break
+            # Nothing at all: NVD may file the product under edition CPEs (atlassian:confluence_server).
+            editions = _edition_products(products, keys)
+            if not editions:
+                break
+            products = editions
     except SourceError as exc:
         return {"tool": "version_check", "error": str(exc)}
 
@@ -2675,6 +2683,27 @@ def _upgrade_with_review_note(upgrade: Optional[Dict[str, Any]], unanalyzed: Lis
     return upgrade
 
 
+_EDITION_SUFFIXES = ("_server", "_data_center", "_enterprise")
+
+
+def _edition_products(products: List[Tuple[str, str]], keys: Optional[ApiKeys]) -> List[Tuple[str, str]]:
+    """Edition CPEs NVD has for these products, e.g. atlassian:confluence_server for atlassian:confluence.
+
+    Some vendors file current CVEs only under edition names, and the plain name is a legacy CPE with no
+    CVEs at modern versions. Checked only when the plain names match nothing, so it costs nothing otherwise.
+    """
+    found: List[Tuple[str, str]] = []
+    for vendor, product in products:
+        if vendor == "*" or product.endswith(_EDITION_SUFFIXES):
+            continue
+        for suffix in _EDITION_SUFFIXES:
+            data = _nvd_get(NVD_CPE_URL, {"cpeMatchString": f"cpe:2.3:*:{vendor}:{product}{suffix}",
+                                          "resultsPerPage": 1}, keys)
+            if int(data.get("totalResults", 0)):
+                found.append((vendor, product + suffix))
+    return found[:2]
+
+
 def _resolve_products(name: str, keys: Optional[ApiKeys]) -> List[Tuple[str, str]]:
     """Map a free-form software name to NVD CPE (vendor, product) pairs."""
     normalized = _DAEMON_SUFFIXES.sub("", normalize_software_name(name))
@@ -2707,7 +2736,10 @@ def _resolve_products(name: str, keys: Optional[ApiKeys]) -> List[Tuple[str, str
     # ("apache struts" -> apache:struts). Guessing an unrelated product would produce false findings.
     covering = [p for p in counts
                 if wanted <= set(re.findall(r"[a-z0-9.+]+", f"{p[0]} {p[1]}".replace("_", " ").lower()))]
-    return sorted(covering, key=lambda p: -counts[p])[:2]
+    # "atlassian bitbucket" names atlassian:bitbucket itself. Longer names that also contain the words, such as
+    # bitbucket_auto_unapprove, are add-ons whose CVEs aren't the product's, so they're dropped when it's there.
+    named = [p for p in covering if p[1].replace("_", " ") in (normalized, normalized.split(" ", 1)[-1])]
+    return (named or sorted(covering, key=lambda p: -counts[p]))[:2]
 
 
 # Tool registry used by the agent: tool name -> function.

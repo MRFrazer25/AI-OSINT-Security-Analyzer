@@ -6,6 +6,7 @@ import re
 import time
 from datetime import datetime
 
+import altair as alt
 import streamlit as st
 
 try:  # before importing ai, so COHERE_MODEL in .env sets the default model (API keys are never read from it)
@@ -15,8 +16,8 @@ try:  # before importing ai, so COHERE_MODEL in .env sets the default model (API
 except ImportError:
     pass
 
-from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_markdown_export, build_report_data,
-                escape_markdown, run_agent, sanitize_report_markdown)
+from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, build_cve_table, build_markdown_export,
+                build_report_data, escape_markdown, run_agent, sanitize_report_markdown)
 from lookups import KEY_SIGNUP_URLS, ApiKeys, classify_target
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -55,6 +56,23 @@ def effective_keys() -> ApiKeys:
     """Only the keys this visitor typed into their own session. Keys in .env, the environment or Streamlit
     secrets are never used, so one person's keys can't run another person's analysis."""
     return ApiKeys().with_overrides(**st.session_state.user_keys)
+
+# Severity colours for the chart; they read on both the light and dark themes.
+SEVERITY_COLORS = {"Critical": "#c62828", "High": "#ef6c00", "Medium": "#f9a825", "Low": "#1e88e5"}
+
+
+def severity_chart(counts: dict) -> alt.Chart:
+    """Horizontal bars, one per severity, so the labels stay readable on a narrow phone screen."""
+    rows = [{"Severity": s.title(), "CVEs": n} for s, n in counts.items()]
+    order = [s for s in SEVERITY_COLORS if s.upper() in counts]
+    base = alt.Chart(alt.Data(values=rows)).encode(
+        y=alt.Y("Severity:N", sort=order, title=None),
+        x=alt.X("CVEs:Q", title="Confirmed CVEs", axis=alt.Axis(tickMinStep=1)),
+        tooltip=["Severity:N", "CVEs:Q"])
+    bars = base.mark_bar().encode(color=alt.Color("Severity:N", legend=None, scale=alt.Scale(
+        domain=order, range=[SEVERITY_COLORS[s] for s in order])))
+    labels = base.mark_text(align="left", dx=4).encode(text="CVEs:Q")
+    return (bars + labels).properties(height=34 * len(order) + 40)
 
 
 def key_link(name: str) -> str:
@@ -269,10 +287,15 @@ if data:
 
     confirmed_kev = summary.get("cisa_kev_confirmed", [])
     related_kev = summary.get("cisa_kev_related", [])
+    cve_table = build_cve_table(data)
     cols = st.columns(5)
     cols[0].metric("Tool calls", execution["total_tool_calls"])
     cols[1].metric("Successful", execution["successful_tool_calls"])
-    cols[2].metric("CVEs referenced", len(summary["cves_referenced"]))
+    if cve_table["total"]:  # the detailed lists are shortened, so count from the version checks' totals
+        cols[2].metric("Confirmed CVEs", cve_table["total"],
+                       help="CVEs that NVD's version ranges or a package advisory confirm for this exact version")
+    else:
+        cols[2].metric("CVEs referenced", len(summary["cves_referenced"]))
     cols[3].metric("KEV confirmed", len(confirmed_kev),
                    help="Exploited-in-the-wild CVEs (CISA KEV) confirmed to affect this target's exact version: "
                         + (", ".join(confirmed_kev) or "none"))
@@ -287,6 +310,25 @@ if data:
             # Values include third-party text (banners, product names), so escape them.
             st.markdown("\n".join(f"- **{escape_markdown(f['label'])}:** {escape_markdown(f['value'])}"
                                   for f in facts))
+
+    if cve_table["rows"]:
+        st.markdown("**Confirmed vulnerabilities**")
+        if cve_table["by_severity"]:
+            st.altair_chart(severity_chart(cve_table["by_severity"]), width="stretch")
+        # Streamlit's table scrolls sideways on narrow screens instead of squashing the columns.
+        # Most important columns first, so a phone shows them without scrolling; Software only when it varies.
+        columns = ["CVE", "Severity", "In CISA KEV", "EPSS %", "Fixed in", "CVSS", "Exploit published"]
+        if len({row["Software"] for row in cve_table["rows"]}) > 1:
+            columns.insert(1, "Software")
+        st.dataframe(cve_table["rows"], hide_index=True, width="stretch", column_order=columns, column_config={
+            "CVSS": st.column_config.NumberColumn(format="%.1f"),
+            "EPSS %": st.column_config.NumberColumn(format="%.2f%%", help="Chance of exploitation in the next 30 days"),
+            "In CISA KEV": st.column_config.CheckboxColumn(help="Known to be exploited in the wild"),
+            "Exploit published": st.column_config.CheckboxColumn(help="Exploit code is on Exploit-DB"),
+        })
+        st.caption(f"Showing {len(cve_table['rows'])} of {cve_table['total']} confirmed CVEs, most urgent first "
+                   "(in CISA KEV, then EPSS, then CVSS). Click a column heading to sort; on a phone, swipe the "
+                   "table sideways for more columns.")
 
     st.markdown("**AI assessment**")
     # The report can echo untrusted third-party text: render Markdown only (no HTML), with remote images removed.

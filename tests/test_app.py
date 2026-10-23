@@ -115,3 +115,25 @@ def test_optional_keys_are_not_shown_as_missing(app):
                 or "(optional)" in m.value]
     assert any("Cohere" in s and "Missing (required)" in s for s in statuses)
     assert any("NVD" in s and "Not set (optional)" in s for s in statuses)
+
+
+
+def test_report_shows_the_confirmed_cve_table_and_chart(monkeypatch):
+    import ai
+
+    check = {"tool": "version_check", "success": True, "software": "nginx", "version": "1.20.1",
+             "affected_count": 1, "affected_by_severity": {"HIGH": 1},
+             "affected_cves": [{"cve_id": "CVE-2021-23017", "severity": "HIGH", "cvss_score": 7.7,
+                                "epss": {"epss": 0.9}, "fixed_in": "1.21.0"}]}
+
+    def fake_run(target, keys, complexity, on_event=None, model=None):
+        return ai.AgentResult(target=ai.classify_target(target), report="ok", complexity=complexity, model="m",
+                              tool_calls=[ai.ToolCallRecord("version_specific_vulnerability_check", {}, 1, "t", 1,
+                                                            check)])
+
+    monkeypatch.setattr(ai, "run_agent", fake_run)
+    at = _session()
+    at.session_state["user_keys"] = {"cohere": "session-key"}
+    _analyse(at, "nginx 1.20.1")
+    assert any("Confirmed vulnerabilities" in m.value for m in at.markdown)
+    assert at.dataframe and list(at.dataframe[0].value["CVE"]) == ["CVE-2021-23017"]

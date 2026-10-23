@@ -959,3 +959,33 @@ def test_distro_release_prefers_an_exact_package_version(monkeypatch):
 def test_ip_ranges_get_a_clear_error():
     target = t.classify_target("8.8.8.8/24")
     assert target.type == "invalid" and "single public IP" in target.error
+
+
+
+def test_version_check_tries_edition_cpes_when_the_plain_name_matches_nothing(monkeypatch):
+    # Generalises the Confluence fix: vendors that file current CVEs under "_server"/"_data_center" editions.
+    cve = {"id": "CVE-2099-0002", "vulnStatus": "Analyzed", "configurations": [{"nodes": [{"cpeMatch": [
+        {"vulnerable": True, "criteria": "cpe:2.3:a:acme:widget_server:*:*:*:*:*:*:*:*",
+         "versionEndExcluding": "8.0"}]}]}]}
+
+    def fake_nvd(url, params, keys):
+        if url == t.NVD_CPE_URL:
+            return {"totalResults": 1 if params["cpeMatchString"].endswith("widget_server") else 0, "products": []}
+        if params.get("virtualMatchString", "").endswith("widget_server") and "versionStart" in params:
+            return {"totalResults": 1, "vulnerabilities": [{"cve": cve}]}
+        return {"totalResults": 0, "vulnerabilities": []}
+
+    monkeypatch.setattr(t, "_nvd_get", fake_nvd)
+    monkeypatch.setattr(t, "_resolve_products", lambda name, keys: [("acme", "widget")])
+    r = t.version_specific_vulnerability_check("Acme Widget", version="7.1")
+    assert r["cpe_products"] == ["acme:widget_server"]
+    assert r["security_status"] == "VULNERABLE" and r["affected_cve_ids"] == ["CVE-2099-0002"]
+
+
+
+def test_add_on_products_are_not_mixed_in_with_the_product(monkeypatch):
+    # Real case: "Atlassian Bitbucket" also mapped to atlassian:bitbucket_auto_unapprove, an add-on.
+    found = {"products": [{"cpe": {"cpeName": f"cpe:2.3:a:atlassian:{p}:1.0:*:*:*:*:*:*:*"}}
+                          for p in ("bitbucket_auto_unapprove", "bitbucket_auto_unapprove", "bitbucket")]}
+    monkeypatch.setattr(t, "_nvd_get", lambda url, params, keys: found)
+    assert t._resolve_products("Atlassian Bitbucket", None) == [("atlassian", "bitbucket")]

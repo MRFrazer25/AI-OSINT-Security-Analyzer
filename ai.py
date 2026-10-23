@@ -188,6 +188,7 @@ A Markdown table: Finding | Severity | Evidence (source).
 Subsections that apply: Exposure & Services, Threat Intelligence & Reputation, Vulnerabilities, Exploitation Status (KEV, EPSS).
 Inside Vulnerabilities use exactly these headings, and write "None" under any that is empty:
 - Confirmed: CVEs NVD version-matched to this exact product version (status AFFECTED), or the CVE being analysed.
+  Under Confirmed, give a Markdown table with exactly these columns: CVE | Severity | EPSS | In KEV | Fixed in. Most urgent first (in KEV, then EPSS), at most 10 rows, then say how many more there are. Keep each cell short ("Yes"/"No", "12.3%", "1.26.3") so the table fits a phone screen.
 - Related (unconfirmed): product-family or vendor-level matches, including product-level CISA KEV matches. Quote their EPSS.
 - Needs Review: CVEs NVD hasn't analysed yet for this product, or products whose version is unknown.
 - Ruled Out: CVEs NVD shows do NOT affect this version. "No data found" is not "ruled out"; list it under Limitations instead.
@@ -971,6 +972,47 @@ def build_report_data(result: AgentResult, include_facts: bool = True) -> Dict[s
             for r in result.tool_calls
         ],
     }
+
+
+SEVERITY_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+
+
+def build_cve_table(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Confirmed CVEs (NVD version match or package advisory) as table rows, most urgent first.
+
+    Each version check returns its most urgent CVEs plus counts for all of them, so rows can be fewer than
+    ``total``. CVEs the distro has already fixed by a backport are left out, as in the key facts.
+    """
+    backported = set(data.get("summary", {}).get("fixed_by_distro_backport") or [])
+    rows: Dict[str, Dict[str, Any]] = {}
+    total, by_severity = 0, defaultdict(int)
+    for call in data.get("tool_calls", []):
+        r = call.get("result") or {}
+        if r.get("tool") != "version_check" or not r.get("success") or not r.get("version"):
+            continue
+        total += int(r.get("affected_count") or 0)
+        for severity, count in (r.get("affected_by_severity") or {}).items():
+            by_severity[str(severity).upper()] += int(count)
+        for v in r.get("affected_cves") or []:
+            cve_id = v.get("cve_id")
+            if not cve_id or cve_id in backported or cve_id in rows:
+                continue
+            epss = (v.get("epss") or {}).get("epss")
+            rows[cve_id] = {
+                "CVE": cve_id,
+                "Software": f"{r.get('software')} {r.get('version')}",
+                "Severity": str(v.get("severity") or "UNKNOWN").title(),
+                "CVSS": v.get("cvss_score"),
+                # A number (not text) so the column sorts properly; capped below 100 like epss_percent.
+                "EPSS %": round(min(epss * 100, 99.99), 2) if isinstance(epss, (int, float)) else None,
+                "In CISA KEV": bool(v.get("in_cisa_kev")),
+                "Exploit published": bool(v.get("public_exploit")),
+                "Fixed in": v.get("fixed_in") or (f"after {v['fixed_after']}" if v.get("fixed_after") else "not listed"),
+            }
+    ordered = sorted(rows.values(), reverse=True,
+                     key=lambda x: (x["In CISA KEV"], x["EPSS %"] or 0.0, x["CVSS"] or 0.0))
+    return {"rows": ordered, "total": total,
+            "by_severity": {s: by_severity[s] for s in SEVERITY_ORDER if by_severity.get(s)}}
 
 
 def build_markdown_export(data: Dict[str, Any]) -> str:

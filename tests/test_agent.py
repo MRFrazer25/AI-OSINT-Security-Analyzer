@@ -482,3 +482,24 @@ def test_a_version_check_without_a_version_still_has_a_key_fact():
     facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
     assert facts["nginx (no version given)"] == ("120 CVEs in NVD for this product; most recent: CVE-2026-0001 "
                                                  "(HIGH). None can be confirmed without a version.")
+
+
+
+def test_cve_table_lists_confirmed_cves_most_urgent_first():
+    check = {"tool": "version_check", "success": True, "software": "nginx", "version": "1.20.1",
+             "affected_count": 12, "affected_by_severity": {"HIGH": 2, "MEDIUM": 10},
+             "affected_cves": [
+                 {"cve_id": "CVE-2000-0001", "severity": "HIGH", "cvss_score": 8.1, "epss": {"epss": 0.02},
+                  "fixed_in": "1.21.0"},
+                 {"cve_id": "CVE-2000-0002", "severity": "MEDIUM", "cvss_score": 5.3, "epss": {"epss": 0.99999},
+                  "in_cisa_kev": True, "public_exploit": {"count": 1}, "fixed_after": "1.25.2"},
+                 {"cve_id": "CVE-2000-0003", "severity": "HIGH", "cvss_score": 7.5}]}
+    data = {"summary": {"fixed_by_distro_backport": ["CVE-2000-0003"]},
+            "tool_calls": [{"tool": "version_specific_vulnerability_check", "result": check}]}
+    table = ai.build_cve_table(data)
+    assert [r["CVE"] for r in table["rows"]] == ["CVE-2000-0002", "CVE-2000-0001"]  # KEV first; backported left out
+    first = table["rows"][0]
+    assert (first["EPSS %"], first["In CISA KEV"], first["Exploit published"], first["Fixed in"]) == (
+        99.99, True, True, "after 1.25.2")
+    assert table["total"] == 12 and table["by_severity"] == {"HIGH": 2, "MEDIUM": 10}
+    assert ai.build_cve_table({"summary": {}, "tool_calls": []}) == {"rows": [], "total": 0, "by_severity": {}}
