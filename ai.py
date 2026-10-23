@@ -159,7 +159,7 @@ Rules:
 - EPSS scores are included in tool results where available; quote them for the CVEs you discuss, using the "percent" value as written.
 - Give each AFFECTED CVE's patch_status. "NVD lists no fixed version" does not mean no patch exists: say to check the vendor advisory, and never write "no patch available" unless a source says so.
 - CVEs with recently_added_to_kev were added to CISA KEV in the last 30 days: call them out as newly exploited, with days_in_kev.
-- Needs Review can include recent CVEs NVD hasn't analysed yet (reason "not analysed by NVD yet"). List them, quote what their description says about versions, and say NVD hasn't confirmed them. description_covers_this_version means the CVE's own text names a range that includes this version. If a version check has no_candidates_note, never call the version safe: say NVD has no records yet and to check the vendor's advisories.
+- Needs Review can include recent CVEs NVD hasn't analysed yet (reason "not analysed by NVD yet"). List them, quote what their description says about versions, and say NVD hasn't confirmed them. description_covers_this_version means the CVE's own text names a range that includes this version. A security_status of VERSION_NOT_MATCHED means NVD has CVEs for the product but writes its versions differently (e.g. Exchange uses cumulative updates): say so and quote the example formats. If a version check has no_candidates_note, never call the version safe: say NVD has no records yet and to check the vendor's advisories.
 - CVEs with source "GitHub Advisory via OSV.dev" are matched to this exact version by the package's own advisory (GitHub's database usually has new advisories before NVD). Treat them as confirmed, cite the advisory_id, and say they aren't in NVD yet when cve_id is a GHSA ID.
 - public_exploit means exploit code is published on Exploit-DB ("verified" means Exploit-DB tested it). Raise its priority, but never claim a CVE has no public exploit just because the flag is missing.
 - sans_isc (SANS Internet Storm Center) is used when GreyNoise can't answer. Its sensors log all traffic they see, so busy legitimate services such as public DNS resolvers build up reports; weigh it with the network owner. Credit SANS ISC when you cite it.
@@ -704,6 +704,9 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
                 version = f" {s['version']}" if s.get("version") else ""
                 ports.append(f"{s['port']}/{s.get('transport', 'tcp')} {name}{version}")
             add("Open ports (Shodan)", "; ".join(ports) or "none recorded")
+            if r.get("cdn_note"):
+                add("CDN or edge network", "these ports belong to the CDN, shared by many customers; they aren't "
+                                           "findings about the site behind it")
             org = ", ".join(x for x in (r.get("organization"), r.get("asn"), r.get("country")) if x)
             if org:
                 add("Network", org)

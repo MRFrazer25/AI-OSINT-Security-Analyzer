@@ -328,6 +328,10 @@ def is_valid_cve(cve_id: str) -> bool:
     return bool(CVE_RE.match(cve_id.strip()))
 
 
+_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home.arpa", ".localdomain")
+MAX_SOFTWARE_WORDS = 5  # longer text is a sentence, not a product name
+
+
 def classify_target(raw: str) -> Target:
     """Normalise user input and classify it as ip, domain, cve or software."""
     if not raw or not isinstance(raw, str):
@@ -348,6 +352,15 @@ def classify_target(raw: str) -> Target:
     if is_valid_cve(value):
         return Target(value.upper(), "cve")
 
+    lowered = value.lower().rstrip(".")
+    if lowered == "localhost" or lowered.endswith(_LOCAL_SUFFIXES):
+        return Target(value, "invalid", f"{value} is a local name, not a public target.")
+    if any(ord(c) > 127 for c in value) and " " not in value:
+        try:
+            value = value.encode("idna").decode("ascii")  # "münchen.de" -> "xn--mnchen-3ya.de"
+        except UnicodeError:
+            return Target(value, "invalid", "That isn't a valid international domain name.")
+
     candidate_ip = value[1:-1] if value.startswith("[") and value.endswith("]") else value
     try:
         ipaddress.ip_address(candidate_ip)
@@ -363,7 +376,8 @@ def classify_target(raw: str) -> Target:
     split = split_software_version(value)
     if split:
         return Target(value, "software", software_name=split[0], software_version=split[1])
-    if SOFTWARE_NAME_RE.fullmatch(value) and not re.fullmatch(r"[\d.]+", value):
+    if (SOFTWARE_NAME_RE.fullmatch(value) and not re.fullmatch(r"[\d.]+", value)
+            and len(value.split()) <= MAX_SOFTWARE_WORDS):
         return Target(value, "software", software_name=value)
 
     return Target(value, "invalid",
@@ -433,6 +447,16 @@ SOFTWARE_CPE_ALIASES: Dict[str, Tuple[str, str]] = {
     "pan-os": ("paloaltonetworks", "pan-os"),
     "fortios": ("fortinet", "fortios"),
     "ivanti connect secure": ("ivanti", "connect_secure"),
+    "rails": ("rubyonrails", "rails"),
+    "ruby on rails": ("rubyonrails", "rails"),
+    "spring": ("*", "spring_framework"),
+    "spring framework": ("*", "spring_framework"),
+    "ats": ("apache", "traffic_server"),
+    "apache traffic server": ("apache", "traffic_server"),
+    "traffic server": ("apache", "traffic_server"),
+    "exchange server": ("microsoft", "exchange_server"),
+    "microsoft exchange": ("microsoft", "exchange_server"),
+    "microsoft exchange server": ("microsoft", "exchange_server"),
 }
 
 # Placeholder words a model may pass instead of a real product name.
@@ -2396,10 +2420,14 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
                                  score(v)), reverse=True)
     no_fix = [v["cve_id"] for v in affected if not (v.get("fixed_in") or v.get("fixed_after"))]
 
+    no_match_note, version_mismatch = (_no_candidates_note(products, version, keys) if not candidates_total
+                                       else (None, False))
     if affected:
         status = "VULNERABLE"
     elif unanalyzed:
         status = "REVIEW_NEEDED"
+    elif version_mismatch:
+        status = "VERSION_NOT_MATCHED"  # NVD has CVEs for the product but numbers its versions another way
     else:
         status = "NO_KNOWN_VULNERABILITIES"
 
@@ -2439,11 +2467,7 @@ def osint_version_specific_vulnerability_check(software_name: str, keys: Optiona
              if len(not_affected) > not_affected_limit else None)) if v},
         "nvd_candidates_checked": len(seen),
         "nvd_candidates_total": candidates_total,
-        **({"no_candidates_note": (f"NVD has no CVEs recorded for {', '.join(f'{v}:{p}' for v, p in products)} "
-                                   f"{version}. Very recent advisories can take days to reach NVD, so check the "
-                                   "vendor's security advisories. If you expected older CVEs, the name may map to a "
-                                   "different product: retry with the vendor and product name, or use osint_cve_search.")}
-           if not candidates_total else {}),
+        **({"no_candidates_note": no_match_note} if no_match_note else {}),
         "results_truncated": truncated,
         "ruled_out_count": len(not_affected),
         "ruled_out_examples": [{"cve_id": v["cve_id"], "affected_ranges": v.get("affected_ranges")}
@@ -2561,6 +2585,33 @@ def _recent_unanalyzed_cves(name: str, products: List[Tuple[str, str]], keys: Op
     return [cve for cve in (v.get("cve", {}) for v in data.get("vulnerabilities", []))
             if cve.get("vulnStatus") in _UNANALYZED_STATUSES and cve.get("id") not in seen
             and _description_is_about(_english_description(cve), term)]
+
+
+def _no_candidates_note(products: List[Tuple[str, str]], version: str, keys: Optional[ApiKeys]) -> Tuple[str, bool]:
+    """Why a version matched nothing, and whether NVD has CVEs for the product but writes its versions differently."""
+    names = ", ".join(f"{v}:{p}" for v, p in products)
+    examples: List[str] = []
+    try:
+        vendor, product = products[0]
+        _, recent = _nvd_most_recent({"virtualMatchString": f"cpe:2.3:*:{vendor}:{product}"}, keys, 20)
+        for cve in recent:
+            for config in cve.get("configurations", []) or []:
+                for node in config.get("nodes", []) or []:
+                    for match in node.get("cpeMatch", []) or []:
+                        cpe = _parse_cpe(match.get("criteria", ""))
+                        if cpe["product"] == product and cpe["version"] not in ("*", "-", ""):
+                            label = cpe["version"] + (f" {cpe['update']}" if cpe["update"] not in ("*", "-", "") else "")
+                            if label not in examples:
+                                examples.append(label)
+    except SourceError:
+        pass
+    if examples:
+        return (f"NVD has CVEs for {names}, but none at version {version}. NVD writes this product's versions like: "
+                f"{', '.join(examples[:5])}. Retry with a version in that form, or check the vendor's advisories. "
+                "Don't treat this version as safe."), True
+    return (f"NVD has no CVEs recorded for {names} {version}. Very recent advisories can take days to reach NVD, so "
+            "check the vendor's security advisories. If you expected older CVEs, the name may map to a different "
+            "product: retry with the vendor and product name, or use osint_cve_search."), False
 
 
 def _keyword_fallback_cves(name: str, products: List[Tuple[str, str]], keys: Optional[ApiKeys],
