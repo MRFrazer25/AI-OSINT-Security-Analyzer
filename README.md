@@ -1,8 +1,10 @@
 # AI Vulnerability Exposure Analyzer
 
-An AI agent that investigates IP addresses, domains, CVEs and software versions across several threat-intelligence sources. It then writes an evidence-based security assessment. Cohere's Command A+ model decides which tools to run, and every finding in the report is tied back to the source that produced it.
+An AI agent that checks IP addresses, domains, CVEs and software versions for **confirmed vulnerabilities and exposure** across several threat-intelligence sources, then writes an evidence-based security assessment. Cohere's Command A+ model decides which tools to run, and every finding in the report is tied back to the source that produced it.
 
 **Live demo:** [osint-ai.streamlit.app](https://osint-ai.streamlit.app)
+
+**Also available as an MCP server:** [vulnerability-exposure-mcp](https://github.com/MRFrazer25/vulnerability-exposure-mcp) runs the same checks inside Claude, Cursor and other MCP clients, with no Cohere key needed.
 
 ![Security report for scanme.nmap.org, showing the key facts box, CISA KEV matches and the AI executive summary](docs/screenshot.png)
 
@@ -60,9 +62,9 @@ All of these offer free tiers. Check each provider for its current limits. Free 
 
 This product uses data from the NVD API but is not endorsed or certified by the NVD.
 
-Spamhaus DROP data is (c) The Spamhaus Project.
+Spamhaus DROP data is (c) The Spamhaus Project. CVE® is a registered trademark of The MITRE Corporation.
 
-This is an independent project, not affiliated with, endorsed by or sponsored by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA, FIRST, Spamhaus, GreyNoise or the internet registries. Their names are used only to say which services it works with.
+This is an independent project, not affiliated with, endorsed by or sponsored by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA, FIRST, MITRE, Spamhaus, GreyNoise, SANS, OffSec (Exploit-DB), GitHub, Google (OSV.dev), Sectigo (crt.sh), SSLMate (Cert Spotter) or the internet registries. Their names are used only to say which services it works with.
 
 ## Running locally
 
