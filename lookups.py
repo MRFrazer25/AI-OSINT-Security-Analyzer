@@ -503,6 +503,8 @@ SOFTWARE_CPE_ALIASES: Dict[str, Tuple[str, str]] = {
 # Products whose CVEs NVD files under two CPEs at once. A keyword search finds only the legacy CPE
 # (atlassian:confluence, whose versions look like 2.0.1_build_321), so these are mapped explicitly.
 _PRODUCT_FAMILIES: Dict[str, List[Tuple[str, str]]] = {
+    # NVD files older nginx CVEs under nginx:nginx and f5:nginx, and F5's newer ones under nginx_open_source.
+    "nginx": [("*", "nginx"), ("f5", "nginx_open_source")],
     "confluence": [("atlassian", "confluence_server"), ("atlassian", "confluence_data_center")],
     "confluence data center": [("atlassian", "confluence_server"), ("atlassian", "confluence_data_center")],
     "jira": [("atlassian", "jira_server"), ("atlassian", "jira_data_center")],
@@ -1504,9 +1506,11 @@ def distro_patch_check(package: str, package_version: str, distro: str, release:
             result["update_package_to_at_least"]["note"] = "Some of these fixes need an Ubuntu Pro subscription."
     result["no_fix_released_yet"] = [v["cve_id"] for v in vulns if not open_fix.get(v["cve_id"])]
     result["open_in_package_count"] = len(vulns)
+    result["open_in_package_ids"] = [v["cve_id"] for v in vulns]
     result["open_in_package"] = vulns[:result_limit]
     if len(vulns) > result_limit:
-        result["open_in_package_shown"] = f"showing {result_limit} of {len(vulns)}, most exploited first"
+        result["open_in_package_shown"] = (f"showing {result_limit} of {len(vulns)}, most exploited first; "
+                                           "open_in_package_ids lists them all")
     result["note"] = (f"From {name}'s own security data via OSV.dev, which accounts for fixes {name} backports "
                       "without changing the upstream version. FIXED_IN_PACKAGE overrides an NVD version match. "
                       "NOT_LISTED means the distro's data doesn't cover that CVE for this package.")
@@ -2091,7 +2095,7 @@ def subdomains(domain: str, limit: int = 100) -> Dict[str, Any]:
         "count": len(found),
         "subdomains": found[:limit],
         **({"subdomains_shown": f"showing {limit} of {len(found)}"} if len(found) > limit else {}),
-        "wildcard_certificates": sorted(wildcards)[:20],
+        "wildcard_certificates": [f"*.{w}" for w in sorted(wildcards)[:20]],
         "note": ("From public certificate transparency logs: names that have had TLS certificates. They may no "
                  "longer exist or resolve. Shodan lookups are quota-limited, so check only hosts that matter."),
         **({} if found or wildcards else {"info": f"No certificates found for {domain}"}),
@@ -2477,7 +2481,7 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
         return {"tool": "version_check", "error": str(exc)}
     if not products:
         close = difflib.get_close_matches(normalize_software_name(name),
-                                          [*SOFTWARE_CPE_ALIASES, *_PRODUCT_FAMILIES], n=3, cutoff=0.8)
+                                          list(dict.fromkeys([*SOFTWARE_CPE_ALIASES, *_PRODUCT_FAMILIES])), n=3, cutoff=0.8)
         hint = (f" Did you mean {' or '.join(close)}? If so, retry with that name." if close
                 else " Try cve_search instead.")
         return {"tool": "version_check", "success": False, "software": name,
@@ -2486,10 +2490,15 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
 
     if not version:
         try:
-            vendor, product = products[0]
-            total, cves = _nvd_most_recent({"virtualMatchString": f"cpe:2.3:*:{vendor}:{product}"}, keys, result_limit)
+            total, cves = 0, []
+            for vendor, product in products:
+                count, found = _nvd_most_recent({"virtualMatchString": f"cpe:2.3:*:{vendor}:{product}"}, keys,
+                                                result_limit)
+                total, cves = total + count, cves + found
         except SourceError as exc:
             return {"tool": "version_check", "error": str(exc)}
+        cves = list({c.get("id"): c for c in sorted(cves, key=lambda c: c.get("published", ""))}.values())
+        cves = sorted(cves, key=lambda c: c.get("published", ""), reverse=True)[:result_limit]
         vulns = [summarize_nvd_cve(c, description_limit=250, reference_limit=0) for c in cves]
         _enrich_with_exploit_intel(vulns)
         return {

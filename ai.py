@@ -983,8 +983,9 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
                 exploits.setdefault(e["cve_id"], e["public_exploit"])
     if exploits:
         add("Public exploit code (Exploit-DB)", ", ".join(
-            f"{c} ({x.get('count')} published" + (", verified" if x.get("verified") else "") + ")"
-            for c, x in list(exploits.items())[:8]))
+            f"{c} ({x.get('count')} published" + (", verified" if x.get("verified") else "")
+            + ("; fixed in this package by the distro backport" if c in summary["fixed_by_distro_backport"] else "")
+            + ")" for c, x in list(exploits.items())[:8]))
     confirmed = [kev_lines.get(c, c) for c in summary["cisa_kev_confirmed"]]
     related = [kev_lines.get(c, c) for c in summary["cisa_kev_related"]]
     backport_unchecked = not has_distro_check and any(
@@ -1267,7 +1268,8 @@ def _confirmed_and_fixed_after(evidence: Any) -> Tuple[set, Dict[str, str]]:
         if isinstance(node, list):
             stack.extend(node)
         elif isinstance(node, dict):
-            confirmed.update(str(i).upper() for i in node.get("affected_cve_ids") or [])
+            for key in ("affected_cve_ids", "still_affects_package", "open_in_package_ids", "no_fix_released_yet"):
+                confirmed.update(str(i).upper() for i in node.get(key) or [])
             cve = str(node.get("cve_id") or "").upper()
             fixed = node.get("fixed_after") or (str(node["fixed"])[6:] if str(node.get("fixed") or "")
                                                 .startswith("after ") else None)
@@ -1340,11 +1342,13 @@ def _wrong_exploit_claims(report: str, exploits: Dict[str, Any], known: set) -> 
         if len(ids) != 1 or not claim or re.search(r"\b(?:no|not|without|none)\b[^.\n]{0,25}$",
                                                    sentence[:claim.start()], re.IGNORECASE):
             continue
-        cve = ids.pop()
+        cve, quoted = ids.pop(), " ".join(sentence.split())[:80]
         if cve not in exploits:
-            wrong.add(f"{cve} has no public exploit in the data")
-        elif re.search(r"\bverified\b", sentence, re.IGNORECASE) and not exploits[cve].get("verified"):
-            wrong.add(f"{cve}'s Exploit-DB entry isn't verified")
+            wrong.add(f"{cve} has no public exploit in the data (\"{quoted}\")")
+        elif (re.search(r"\bverified\b", sentence, re.IGNORECASE)
+              and not re.search(r"\b(?:not|un)[- ]?verified\b", sentence, re.IGNORECASE)
+              and not exploits[cve].get("verified")):
+            wrong.add(f"{cve}'s Exploit-DB entry isn't verified (\"{quoted}\")")
     return sorted(wrong)
 
 

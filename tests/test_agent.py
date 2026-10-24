@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import ai
+import lookups
 from lookups import ApiKeys
 
 
@@ -664,8 +665,9 @@ def test_the_report_check_catches_wrong_exploit_and_all_fixed_claims():
     report = ("- CVE-2023-38408 has EPSS 79.70% and a public exploit.\n- CVE-2024-6387 has a verified Exploit-DB "
               "entry.\n1. Upgrade OpenSSH to at least version 9.3 to address all CRITICAL vulnerabilities\n")
     found = ai.check_report(report, {"tool_calls": [{"result": check}]})
-    assert found["wrong_exploit_claims"] == ["CVE-2023-38408 has no public exploit in the data",
-                                             "CVE-2024-6387's Exploit-DB entry isn't verified"]
+    assert [f.split(" (")[0] for f in found["wrong_exploit_claims"]] == [
+        "CVE-2023-38408 has no public exploit in the data", "CVE-2024-6387's Exploit-DB entry isn't verified"]
+    assert "EPSS 79.70% and a public exploit" in found["wrong_exploit_claims"][0]  # the sentence is quoted
     assert found["wrong_fix_wording"] == ["not all fixed in 9.3: CVE-2026-60002 is fixed in 10.4"]
     good = ("- CVE-2024-6387 has a public exploit (Exploit-DB 52269, unverified). CVE-2023-38408 has no public "
             "exploit listed.\n1. Upgrade to 10.4 or later to address all CRITICAL vulnerabilities\n")
@@ -706,3 +708,18 @@ def test_the_report_check_files_distro_fixed_cves_under_ruled_out():
 
 def test_the_first_message_gives_the_model_todays_date():
     assert ai._initial_prompt(ai.classify_target("nginx 1.20.1")).startswith("Today's date is 20")
+
+
+def test_nginx_is_searched_under_f5s_newer_product_name_too():
+    assert lookups._resolve_products("nginx", None) == [("*", "nginx"), ("f5", "nginx_open_source")]
+
+
+def test_cves_the_distro_says_are_open_in_the_package_count_as_confirmed():
+    distro = {"tool": "distro_patch_check", "success": True, "open_in_package_ids": ["CVE-2025-26466"],
+              "still_affects_package": [], "fixed_by_backport": []}
+    evidence = {"tool_calls": [{"result": distro}]}
+    report = ("#### Confirmed\n- CVE-2025-26466 (open in this Ubuntu package; Exploit-DB lists a public exploit, "
+              "not verified)\n")
+    found = ai.check_report(report, evidence)
+    assert "unconfirmed_cves_filed_as_confirmed" not in found
+    assert "CVE-2025-26466 has no public exploit in the data" in found["wrong_exploit_claims"][0]

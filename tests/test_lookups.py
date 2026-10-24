@@ -230,7 +230,7 @@ def test_subdomains_come_from_certificate_logs_and_are_validated(monkeypatch):
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(200, rows))
     r = t.subdomains("nmap.org")
     assert r["source"] == "crt.sh" and r["subdomains"] == ["nmap.org", "svn.nmap.org", "www.nmap.org"]
-    assert r["wildcard_certificates"] == ["nmap.org"]
+    assert r["wildcard_certificates"] == ["*.nmap.org"]
     # crt.sh down: Cert Spotter is tried instead.
     monkeypatch.setattr(t, "_http_get", lambda url, **k: _Resp(502, None) if "crt.sh" in url
                         else _Resp(200, [{"dns_names": ["mail.nmap.org"]}]))
