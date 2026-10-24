@@ -625,3 +625,67 @@ def test_the_report_check_catches_misfiled_cves_and_misquoted_fixes():
     assert found["wrong_fix_wording"] == ["CVE-2023-44487 is fixed after 9.0.80, not in it"]
     good = "#### Confirmed\n- CVE-2023-44487, fixed after 9.0.80\n- CVE-2020-1938, fixed in 9.0.31\n"
     assert ai.check_report(good, {"tool_calls": [{"result": check}]})["ok"]
+
+
+def test_a_distro_package_build_in_the_target_is_split_off():
+    target = ai.classify_target("OpenSSH 8.9p1 Ubuntu-3ubuntu0.6")
+    assert (target.software_name, target.software_version) == ("OpenSSH", "8.9p1")
+    assert (target.distro, target.distro_revision) == ("Ubuntu", "3ubuntu0.6")
+    assert "package_version='8.9p1-3ubuntu0.6'" in ai._initial_prompt(target)
+    debian = ai.classify_target("OpenSSH_9.2p1 Debian-2+deb12u3")
+    assert (debian.software_version, debian.distro_revision) == ("9.2p1", "2+deb12u3")
+    assert ai.classify_target("Ubuntu-3ubuntu0.6").type == "invalid"
+    assert ai.classify_target("Ubuntu 22.04").software_version == "22.04"  # a release, not a revision
+    import lookups
+    assert "package revision" in lookups.version_specific_vulnerability_check("Ubuntu", version="3ubuntu0.6")["error"]
+
+
+def test_the_report_check_catches_unconfirmed_cves_and_upgrades_without_a_version():
+    check = {"tool": "version_check", "success": True, "security_status": "UNKNOWN_VERSION",
+             "most_recent_cves": [{"cve_id": "CVE-2017-20005", "severity": "CRITICAL"}]}
+    report = ("#### Confirmed\nNone confirmed. Key candidates:\n- CVE-2017-20005 (CRITICAL)\n\n"
+              "## Recommendations\n1. If running an older nginx, update to at least 1.13.6\n")
+    found = ai.check_report(report, {"tool_calls": [{"result": check}], "target_type": "software"})
+    assert found["unconfirmed_cves_filed_as_confirmed"] == ["CVE-2017-20005"]
+    assert found["upgrade_version_without_target_version"] == ["1.13.6"]
+    good = "#### Confirmed\nNone: no version was given.\n\n#### Needs Review\n- CVE-2017-20005\n"
+    assert ai.check_report(good, {"tool_calls": [{"result": check}], "target_type": "software"})["ok"]
+
+
+def test_the_report_check_catches_wrong_exploit_and_all_fixed_claims():
+    check = {"tool": "version_check", "success": True, "security_status": "VULNERABLE",
+             "affected_cve_ids": ["CVE-2023-38408", "CVE-2024-6387", "CVE-2026-60002"],
+             "affected_cves": [
+                 {"cve_id": "CVE-2023-38408", "severity": "CRITICAL", "fixed_in": "9.3"},
+                 {"cve_id": "CVE-2024-6387", "severity": "HIGH", "fixed_after": "9.8",
+                  "public_exploit": {"exploit_db_ids": ["52269"], "count": 1, "verified": False}}],
+             "affected_cves_more": [{"cve_id": "CVE-2026-60002", "severity": "CRITICAL", "fixed": "10.4"}]}
+    report = ("- CVE-2023-38408 has EPSS 79.70% and a public exploit.\n- CVE-2024-6387 has a verified Exploit-DB "
+              "entry.\n1. Upgrade OpenSSH to at least version 9.3 to address all CRITICAL vulnerabilities\n")
+    found = ai.check_report(report, {"tool_calls": [{"result": check}]})
+    assert found["wrong_exploit_claims"] == ["CVE-2023-38408 has no public exploit in the data",
+                                             "CVE-2024-6387's Exploit-DB entry isn't verified"]
+    assert found["wrong_fix_wording"] == ["not all fixed in 9.3: CVE-2026-60002 is fixed in 10.4"]
+    good = ("- CVE-2024-6387 has a public exploit (Exploit-DB 52269, unverified). CVE-2023-38408 has no public "
+            "exploit listed.\n1. Upgrade to 10.4 or later to address all CRITICAL vulnerabilities\n")
+    assert ai.check_report(good, {"tool_calls": [{"result": check}]})["ok"]
+
+
+def test_key_facts_list_a_repeated_fact_once_and_a_product_kev_check_as_checked():
+    kev = {"tool": "cisa_kev", "success": True, "software_matches": {"cloudflare": {"total_kev_entries": 0,
+                                                                                    "most_recent": []}}}
+    records = [ai.ToolCallRecord(tool="cisa_kev_check", arguments={}, iteration=1, timestamp="", duration_ms=0,
+                                 result=kev)] * 2
+    result = ai.AgentResult(target=ai.classify_target("example.com"), report="", complexity="Quick Scan",
+                            model="m", tool_calls=records)
+    facts = ai.build_key_facts(result)
+    assert {"label": "CISA KEV: confirmed for this target", "value": "none"} in facts
+    assert len(facts) == len({(f["label"], f["value"]) for f in facts})
+
+
+def test_flagged_ids_are_looked_up_in_nvd(monkeypatch):
+    found = {"CVE-2021-44228": {"success": True}, "CVE-2026-113497": {"success": False,
+                                                                       "info": "CVE-2026-113497 not found in NVD"}}
+    monkeypatch.setattr(ai, "nvd_lookup", lambda cve_id, keys, reference_limit=0: found[cve_id])
+    assert ai.nvd_status_of(["CVE-2021-44228", "CVE-2026-113497", "GHSA-aaaa-bbbb-cccc"], None) == {
+        "CVE-2021-44228": "in NVD", "CVE-2026-113497": "not in NVD"}

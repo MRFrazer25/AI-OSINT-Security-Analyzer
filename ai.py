@@ -15,7 +15,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import cohere
 
 from lookups import (KEV_RECENT_DAYS, KEY_SIGNUP_URLS, TOOL_FUNCTIONS, ApiKeys, Target, classify_target,
-                     epss_percent, is_valid_cve, normalize_software_name, redact, unseen_ip)
+                     compare_versions, epss_percent, is_valid_cve, normalize_software_name, nvd_lookup, redact,
+                     unseen_ip)
 
 logger = logging.getLogger(__name__)
 
@@ -398,14 +399,31 @@ def report_check(data: Dict[str, Any]) -> Dict[str, Any]:
     return check_report(data.get("report_markdown") or "", evidence)
 
 
+def unlinked_ids(data: Dict[str, Any]) -> List[str]:
+    """Flagged IDs that get no NVD link: all of them, except ones NVD was found to have."""
+    status = data.get("unverified_id_status") or {}
+    return [i for i in unverified_ids(data) if status.get(i) != "in NVD"]
+
+
 def report_check_lines(data: Dict[str, Any]) -> List[str]:
     """The checker's findings as short sentences for the page and the export."""
     found = report_check(data)
-    labels = {"unverified_ids": "IDs no lookup returned", "unverified_versions": "versions not in the data",
+    status = data.get("unverified_id_status") or {}
+    ids = found.pop("unverified_ids", [])
+    found["ids_in_nvd"] = [i for i in ids if status.get(i) == "in NVD"]
+    found["ids_not_in_nvd"] = [i for i in ids if status.get(i) == "not in NVD"]
+    found["unverified_ids"] = [i for i in ids if status.get(i) not in ("in NVD", "not in NVD")]
+    labels = {"unverified_ids": "IDs no lookup returned",
+              "ids_not_in_nvd": "IDs no lookup returned and NVD doesn't have (likely wrong, or too new for NVD)",
+              "ids_in_nvd": "IDs this analysis didn't look up (they're in NVD, so check they apply)",
+              "unverified_versions": "versions not in the data",
               "unverified_percents": "percentages not in the data",
               "unsupported_claims": "claims no source makes",
               "confirmed_cves_filed_as_unconfirmed": "confirmed CVEs listed as related or ruled out",
-              "wrong_fix_wording": "fix versions misquoted"}
+              "wrong_fix_wording": "fix versions misquoted",
+              "unconfirmed_cves_filed_as_confirmed": "unconfirmed CVEs listed as confirmed",
+              "upgrade_version_without_target_version": "upgrade versions named though no version was given",
+              "wrong_exploit_claims": "exploit claims the data doesn't back"}
     return [f"{label}: {', '.join(found[key])}" for key, label in labels.items() if found.get(key)]
 # A CVE ID in escaped Markdown ("CVE-2021-44228" or "CVE\-2021\-44228"), but not inside a URL or word, and not
 # after "!", which would make the link an image the browser loads by itself.
@@ -490,8 +508,16 @@ def _initial_prompt(target: Target) -> str:
     if target.type == "software":
         version_clause = (f" and version={target.software_version!r}" if target.software_version
                           else " (no version given: state that results are generic and ask for a version)")
-        return TARGET_PLANS["software"].format(value=target.value, name=target.software_name,
+        plan = TARGET_PLANS["software"].format(value=target.value, name=target.software_name,
                                                version_clause=version_clause)
+        if target.distro and target.software_version:
+            plan += (f" The target is a {target.distro} package build ({target.distro}-{target.distro_revision}),"
+                     f" and {target.distro} backports fixes without changing the upstream version: after the "
+                     f"version check, run distro_patch_check with distro={target.distro!r}, package_version="
+                     f"{target.software_version + '-' + target.distro_revision!r}, the package's "
+                     f"{target.distro} source name (usually the product in lowercase, e.g. 'openssh') and "
+                     "the affected CVE IDs.")
+        return plan
     return TARGET_PLANS[target.type].format(value=target.value)
 
 
@@ -773,7 +799,9 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
         relevant_cves.add(result.target.value)
 
     def add(label: str, value: str) -> None:
-        facts.append({"label": label, "value": value})
+        fact = {"label": label, "value": value}
+        if fact not in facts:  # e.g. a second CDN IP with the same ports and network
+            facts.append(fact)
 
     if result.target.type == "domain" and "xn--" in result.target.value:
         try:
@@ -954,7 +982,7 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
     backport_unchecked = not has_distro_check and any(
         rec.result.get("success") and rec.result.get("tool") == "shodan"
         and (rec.result.get("backport_note") or rec.result.get("distro_packages")) for rec in result.tool_calls)
-    kev_checked = any(_has_key(rec.result, ("in_cisa_kev", "cisa_kev_product_matches", "cves_in_kev"))
+    kev_checked = any(_has_key(rec.result, ("in_cisa_kev", "cisa_kev_product_matches", "cves_in_kev", "software_matches"))
                       and not _has_key(rec.result, ("kev_unavailable",))
                       for rec in result.tool_calls if rec.status == "success")
     no_match = "none" if kev_checked else "not checked"
@@ -1209,6 +1237,16 @@ _UNSUPPORTED_CLAIMS = {
 _FIXED_IN = re.compile(r"\b(CVE-\d{4}-\d{4,7})\b[^\n]{0,120}?\bfixed in (?:version )?(\d+(?:\.\d+)+[a-z0-9]*)\b",
                        re.IGNORECASE)
 _UNCONFIRMED_SECTION = re.compile(r"^(?:related|ruled out)\b", re.IGNORECASE)
+# An upgrade target named in the report ("update to at least 1.23.2").
+_UPGRADE_TO = re.compile(r"\b(?:upgrad|updat)\w*\b[^.\n]{0,40}?\b(\d+(?:\.\d+)+[a-z0-9]*)\b(?!\.?\d|%)",
+                         re.IGNORECASE)
+_EXPLOIT_CLAIM = re.compile(r"\bexploit-db\b|\bpublic exploit|\bexploit code\b", re.IGNORECASE)
+# "all critical vulnerabilities are fixed in 9.3", "upgrade to 9.3 to address all CRITICAL vulnerabilities".
+_ALL_FIXED = re.compile(r"\ball\b[^.\n]{0,60}?\b(?:fixed|addressed|resolved|patched)\b"
+                        r"|\b(?:fix|address|resolv|patch)\w*\s+all\b", re.IGNORECASE)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n")
+_A_VERSION = re.compile(r"(?<![\w.])(\d+(?:\.\d+)+[a-z0-9]*)\b(?!\.?\d|%)", re.IGNORECASE)
+_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 
 
 def _confirmed_and_fixed_after(evidence: Any) -> Tuple[set, Dict[str, str]]:
@@ -1228,6 +1266,90 @@ def _confirmed_and_fixed_after(evidence: Any) -> Tuple[set, Dict[str, str]]:
                 fixed_after[cve] = str(fixed)
             stack.extend(node.values())
     return confirmed, fixed_after
+
+
+def _cve_details(evidence: Any) -> Dict[str, Any]:
+    """Per CVE: its fix ("in X" / "after X"), severity and public exploit, plus whether every version check
+    ran without a version (so no upgrade target exists)."""
+    fixes, severity, exploits, statuses = {}, {}, {}, []
+    stack = [evidence]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, dict):
+            if node.get("tool") == "version_check" and node.get("success"):
+                statuses.append(node.get("security_status"))
+            cve = str(node.get("cve_id") or "").upper()
+            if cve:
+                fixed = str(node.get("fixed") or "")
+                if node.get("fixed_in") or (fixed and not fixed.startswith("after ")):
+                    fixes.setdefault(cve, ("in", str(node.get("fixed_in") or fixed)))
+                elif node.get("fixed_after") or fixed.startswith("after "):
+                    fixes.setdefault(cve, ("after", str(node.get("fixed_after") or fixed[6:])))
+                if str(node.get("severity") or "").upper() in _SEVERITIES:
+                    severity.setdefault(cve, str(node["severity"]).upper())
+                if isinstance(node.get("public_exploit"), dict):
+                    exploits[cve] = node["public_exploit"]
+            stack.extend(node.values())
+    return {"fixes": fixes, "severity": severity, "exploits": exploits,
+            "no_version": bool(statuses) and all(s == "UNKNOWN_VERSION" for s in statuses)}
+
+
+def _sections(report: str):
+    """Each report line with the Vulnerabilities subsection it is in: "confirmed", "unconfirmed" or None."""
+    section = None
+    for line in report.splitlines():
+        heading = line.strip().lstrip("#").strip().strip("*").strip().rstrip(":").strip()
+        if line.lstrip().startswith(("#", "**")) and heading:
+            section = ("unconfirmed" if _UNCONFIRMED_SECTION.match(heading)
+                       else "confirmed" if heading.lower().startswith("confirmed") else None)
+        yield section, line
+
+
+def _unconfirmed_in_confirmed(report: str, confirmed: set, known: set) -> List[str]:
+    """CVEs the report lists under Confirmed that no version or distro check confirmed (e.g. a product's
+    recent CVEs when no version was given). Unknown IDs are left to the unverified-ID check."""
+    return sorted({m.upper() for section, line in _sections(report) if section == "confirmed"
+                   for m in _REPORT_IDS.findall(line) if m.upper() not in confirmed and m.upper() in known})
+
+
+def _wrong_exploit_claims(report: str, exploits: Dict[str, Any], known: set) -> List[str]:
+    """A public exploit (or a verified one) credited to a CVE the data has none (or no verified one) for."""
+    wrong = set()
+    for sentence in _SENTENCE_END.split(report):
+        ids = {m.upper() for m in _REPORT_IDS.findall(sentence)} & known
+        claim = _EXPLOIT_CLAIM.search(sentence)
+        if len(ids) != 1 or not claim or re.search(r"\b(?:no|not|without|none)\b[^.\n]{0,25}$",
+                                                   sentence[:claim.start()], re.IGNORECASE):
+            continue
+        cve = ids.pop()
+        if cve not in exploits:
+            wrong.add(f"{cve} has no public exploit in the data")
+        elif re.search(r"\bverified\b", sentence, re.IGNORECASE) and not exploits[cve].get("verified"):
+            wrong.add(f"{cve}'s Exploit-DB entry isn't verified")
+    return sorted(wrong)
+
+
+def _all_fixed_too_low(report: str, confirmed: set, fixes: Dict[str, Any], severity: Dict[str, str]) -> List[str]:
+    """"All (critical) CVEs are fixed in X" when a confirmed one (of that severity) needs a later version."""
+    wrong = set()
+    for sentence in _SENTENCE_END.split(report):
+        claim = _ALL_FIXED.search(sentence)
+        versions = list(_A_VERSION.finditer(sentence)) if claim else []
+        if not versions:
+            continue
+        named = min(versions, key=lambda v: min(abs(v.start() - claim.end()), abs(claim.start() - v.end())))
+        level = next((s for s in _SEVERITIES if re.search(rf"\b{s}\b", sentence, re.IGNORECASE)), None)
+        for cve in sorted(confirmed):
+            kind, fix = fixes.get(cve, (None, None))
+            if not fix or (level and severity.get(cve) != level):
+                continue
+            order = compare_versions(named.group(1), fix)
+            if order < 0 or (kind == "after" and order == 0):
+                wrong.add(f"not all fixed in {named.group(1)}: {cve} is fixed {kind} {fix}")
+                break
+    return sorted(wrong)
 
 
 def _misfiled_confirmed(report: str, confirmed: set) -> List[str]:
@@ -1277,9 +1399,29 @@ def check_report(report: str, evidence: Any) -> Dict[str, Any]:
                     and _asserts(pattern, report) and not re.search(pattern, text, re.IGNORECASE))
     confirmed, fixed_after = _confirmed_and_fixed_after(evidence)
     misfiled = _misfiled_confirmed(report, confirmed)
+    details = _cve_details(evidence)
+    known = {m.upper() for m in _REPORT_IDS.findall(text)}
+    not_confirmed = ([] if isinstance(evidence, dict) and evidence.get("target_type") == "cve"
+                     else _unconfirmed_in_confirmed(report, confirmed, known))
+    no_version_upgrade = sorted(set(_UPGRADE_TO.findall(report))) if details["no_version"] else []
     wrong_fix = sorted({f"{m.group(1).upper()} is fixed after {m.group(2)}, not in it"
                         for m in _FIXED_IN.finditer(report) if fixed_after.get(m.group(1).upper()) == m.group(2)})
     found = {"unverified_ids": ids, "unverified_versions": versions, "unverified_percents": percents,
              "unsupported_claims": claims, "confirmed_cves_filed_as_unconfirmed": misfiled,
-             "wrong_fix_wording": wrong_fix}
+             "wrong_fix_wording": sorted(set(wrong_fix) | set(_all_fixed_too_low(report, confirmed, details["fixes"],
+                                                                             details["severity"]))),
+             "unconfirmed_cves_filed_as_confirmed": not_confirmed,
+             "upgrade_version_without_target_version": no_version_upgrade,
+             "wrong_exploit_claims": _wrong_exploit_claims(report, details["exploits"], known)}
     return {**{k: v for k, v in found.items() if v}, "ok": not any(found.values())}
+
+
+def nvd_status_of(ids: Sequence[str], keys: Any, limit: int = 5) -> Dict[str, str]:
+    """Whether NVD has each ID the report check flagged, so a real CVE this investigation didn't look up isn't
+    taken for a wrong one. One lookup per ID, at most ``limit``; GitHub advisory IDs aren't in NVD."""
+    status = {}
+    for cve_id in [i for i in ids if is_valid_cve(i)][:limit]:
+        found = nvd_lookup(cve_id, keys, reference_limit=0)
+        status[cve_id] = ("in NVD" if found.get("success") else
+                          "not in NVD" if "not found" in str(found.get("info", "")) else "not checked")
+    return status

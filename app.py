@@ -17,8 +17,8 @@ except ImportError:
     pass
 
 from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, NVD_CVE_PAGE, build_cve_table,
-                build_markdown_export, build_report_data, escape_markdown, link_cves, run_agent,
-                report_check_lines, sanitize_report_markdown, unverified_ids)
+                build_markdown_export, build_report_data, escape_markdown, link_cves, nvd_status_of, run_agent,
+                report_check_lines, sanitize_report_markdown, unlinked_ids, unverified_ids)
 from lookups import KEY_SIGNUP_URLS, ApiKeys, classify_target
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -278,6 +278,9 @@ if run_clicked:
                                     f"{len(result.tool_calls)} tool calls, {result.model})",
                               state="complete", expanded=False)
         st.session_state.report_data = build_report_data(result)
+        # Once per analysis, not on every rerun: is each ID the check flagged in NVD at all?
+        st.session_state.report_data["unverified_id_status"] = nvd_status_of(
+            unverified_ids(st.session_state.report_data), keys)
 
 # --- Results ----------------------------------------------------------------------
 data = st.session_state.report_data
@@ -338,7 +341,7 @@ if data:
 
     st.markdown("**AI assessment**")
     # The report can echo untrusted third-party text: render Markdown only (no HTML), with remote images removed.
-    unverified = unverified_ids(data)
+    unverified = unlinked_ids(data)
     problems = report_check_lines(data)
     if problems:
         # A code check of the report against the data, so these don't depend on the model following its rules.

@@ -270,6 +270,11 @@ SOFTWARE_NAME_RE = re.compile(r"[a-z][a-z0-9 ._+-]{1,60}", re.IGNORECASE)
 _SOFTWARE_NAME_PART_RE = re.compile(r"[a-z][a-z0-9 ._+-]*", re.IGNORECASE)
 _SOFTWARE_VERSION_PART_RE = re.compile(r"v?(\d[a-z0-9.+-]*)", re.IGNORECASE)
 _NAME_VERSION_SEPARATORS = " \t/_-"
+# A distro package revision ("3ubuntu0.6", "2+deb12u3"): what follows the upstream version in a banner.
+_DISTRO_REVISION = r"\d[0-9a-z.~]{0,20}(?:ubuntu|\+deb)[0-9a-z.+~]{0,20}"
+_DISTRO_REVISION_RE = re.compile(_DISTRO_REVISION, re.IGNORECASE)
+# "... Ubuntu-3ubuntu0.6" at the end of a target, as in "OpenSSH 8.9p1 Ubuntu-3ubuntu0.6".
+_DISTRO_SUFFIX_RE = re.compile(rf"(?:^|[ _-])(ubuntu|debian)[ -]({_DISTRO_REVISION})$", re.IGNORECASE)
 
 
 def split_software_version(value: str) -> Optional[Tuple[str, str]]:
@@ -297,6 +302,8 @@ class Target:
     error: Optional[str] = None
     software_name: Optional[str] = None
     software_version: Optional[str] = None
+    distro: Optional[str] = None  # "Ubuntu" when the target names a distro package build
+    distro_revision: Optional[str] = None  # "3ubuntu0.6"
 
 
 def validate_public_ip(ip_str: str) -> Tuple[bool, Optional[str]]:
@@ -393,6 +400,17 @@ def classify_target(raw: str) -> Target:
     if is_valid_domain(domain):
         return Target(domain, "domain")
 
+    build = _DISTRO_SUFFIX_RE.search(value)
+    if build:
+        distro, revision = build.group(1).capitalize(), build.group(2)
+        head = value[:build.start()].strip(" _-")
+        split = split_software_version(head) if head else None
+        if not split:
+            return Target(value, "invalid", f"{distro}-{revision} is {'an' if distro == 'Ubuntu' else 'a'} {distro} package revision, not a product "
+                          "version. Enter it after the product and version, as a banner shows it (e.g. "
+                          "'OpenSSH 8.9p1 Ubuntu-3ubuntu0.6').")
+        return Target(value, "software", software_name=split[0], software_version=split[1], distro=distro,
+                      distro_revision=revision)
     split = split_software_version(value)
     if split:
         return Target(value, "software", software_name=split[0], software_version=split[1])
@@ -2437,6 +2455,10 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
     if not name:
         return {"tool": "version_check", "error": "software_name is required"}
     given = str(version).strip() if version is not None else ""
+    if _DISTRO_REVISION_RE.fullmatch(given):
+        return {"tool": "version_check", "error": f"{given!r} is a distro package revision, not the product's "
+                "version: in 'OpenSSH 8.9p1 Ubuntu-3ubuntu0.6' the version is 8.9p1. Retry with the upstream "
+                "version, then run distro_patch_check with the package version (e.g. 8.9p1-3ubuntu0.6)."}
     version = extract_version(given) if given.lower() not in ("unknown", "none", "n/a", "") else None
     ignored = given[:40] if given and version is None and given.lower() not in ("unknown", "none", "n/a") else None
     if version and len(version) > MAX_VERSION_LENGTH:
