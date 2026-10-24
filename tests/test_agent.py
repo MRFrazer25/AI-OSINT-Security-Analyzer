@@ -37,6 +37,26 @@ class FakeClient:
         return self.responses.pop(0)
 
 
+def test_strict_tools_is_used_and_dropped_if_cohere_rejects_it():
+    class BadRequestError(Exception):
+        pass
+
+    class StrictlessClient(FakeClient):
+        def chat(self, **kwargs):
+            if kwargs.get("strict_tools"):
+                self.requests.append({"strict": True})
+                raise BadRequestError("strict_tools not supported")
+            return super().chat(**kwargs)
+
+    client = FakeClient([_response(text="report")])
+    ai.run_agent("CVE-2021-44228", ApiKeys(cohere="k"), "Quick Scan", client=client)
+    assert client.requests[0]["strict_tools"] is True
+    assert all(t["function"]["parameters"]["required"] for t in ai.AGENT_TOOLS)  # strict mode needs one each
+    fallback = StrictlessClient([_response(text="report")])
+    result = ai.run_agent("CVE-2021-44228", ApiKeys(cohere="k"), "Quick Scan", client=fallback)
+    assert result.report == "report" and "strict_tools" not in fallback.requests[-1]
+
+
 def test_agent_runs_tools_and_returns_report(monkeypatch):
     seen = {}
 
