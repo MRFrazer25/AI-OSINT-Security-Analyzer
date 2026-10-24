@@ -2503,8 +2503,9 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
             "most_recent_cves": vulns,
             "note": ((f"{ignored!r} isn't a version number, so it was ignored. These are" if ignored
                       else "No version supplied: these are") + " the product's most recent CVEs, not confirmed to "
-                     "affect it. Put none of them under Confirmed, and don't name an upgrade version: without a "
-                     "version there is no upgrade target."),
+                     "affect it. Put none of them under Confirmed, and don't recommend upgrading to a version: "
+                     "without this target's version there is no upgrade target (conditional advice such as 'if "
+                     "older than X, upgrade to X' is fine)."),
         }
 
     affected, not_affected, unanalyzed = [], [], []

@@ -644,7 +644,8 @@ def test_the_report_check_catches_unconfirmed_cves_and_upgrades_without_a_versio
     check = {"tool": "version_check", "success": True, "security_status": "UNKNOWN_VERSION",
              "most_recent_cves": [{"cve_id": "CVE-2017-20005", "severity": "CRITICAL"}]}
     report = ("#### Confirmed\nNone confirmed. Key candidates:\n- CVE-2017-20005 (CRITICAL)\n\n"
-              "## Recommendations\n1. If running an older nginx, update to at least 1.13.6\n")
+              "## Recommendations\n1. Update nginx to at least 1.13.6\n"
+              "2. If it is older than 1.17.7, upgrade to 1.17.7 or later\n")  # conditional advice is fine
     found = ai.check_report(report, {"tool_calls": [{"result": check}], "target_type": "software"})
     assert found["unconfirmed_cves_filed_as_confirmed"] == ["CVE-2017-20005"]
     assert found["upgrade_version_without_target_version"] == ["1.13.6"]
@@ -689,3 +690,19 @@ def test_flagged_ids_are_looked_up_in_nvd(monkeypatch):
     monkeypatch.setattr(ai, "nvd_lookup", lambda cve_id, keys, reference_limit=0: found[cve_id])
     assert ai.nvd_status_of(["CVE-2021-44228", "CVE-2026-113497", "GHSA-aaaa-bbbb-cccc"], None) == {
         "CVE-2021-44228": "in NVD", "CVE-2026-113497": "not in NVD"}
+
+
+def test_the_report_check_files_distro_fixed_cves_under_ruled_out():
+    distro = {"tool": "distro_patch_check", "success": True, "fixed_by_backport": ["CVE-2023-38408"]}
+    check = {"tool": "version_check", "success": True, "security_status": "VULNERABLE",
+             "affected_cve_ids": ["CVE-2023-38408", "CVE-2024-6387"]}
+    evidence = {"tool_calls": [{"result": check}, {"result": distro}]}
+    wrong = "#### Confirmed\n- CVE-2023-38408, CVE-2024-6387\n\n#### Ruled Out\n- None\n"
+    assert ai.check_report(wrong, evidence)["backport_fixed_cves_filed_as_confirmed"] == ["CVE-2023-38408"]
+    right = ("#### Confirmed\n- CVE-2024-6387\n\n#### Ruled Out\n- CVE-2023-38408 (fixed by the distro backport)\n"
+             "- CVE-2024-6387 is not ruled out: the distro still ships it\n")
+    assert ai.check_report(right, evidence)["ok"]
+
+
+def test_the_first_message_gives_the_model_todays_date():
+    assert ai._initial_prompt(ai.classify_target("nginx 1.20.1")).startswith("Today's date is 20")

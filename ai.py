@@ -166,6 +166,7 @@ How to work:
 - Never say something is absent from a source unless a tool in this investigation checked it; otherwise write "not checked". Say a product has CISA KEV history only when cisa_kev_check returned total_kev_entries above 0 for it. Never describe the target as clean on a source that didn't run.
 - Don't add facts no tool gave: release dates, end-of-life, internet exposure, enabled modules, configuration, who owns or runs something, or anyone's intent. A software or CVE target has no host: under Exposure & Services write only "Not checked: no host was given."
 - Interpret, don't amplify. Use each source's own threat_level (one VirusTotal engine is LOW and often a false positive). EPSS is a probability, not proof of exploitation. A clean VirusTotal/AbuseIPDB result only means no one reported the IP as a source of attacks; it says nothing about whether it's vulnerable.
+- Judge dates by today's date, given at the start of the task, not by your training data: CVEs, releases and advisories dated up to today are current, not "future-dated" or "reserved".
 
 ### Workflow
 - Pick tools that apply to the target (AbuseIPDB takes IPs only), don't repeat identical calls, and request independent calls together. Call tools only with real names, versions and addresses from the evidence or the user: never placeholders ("all", "unknown") or fragments of the target's name.
@@ -422,6 +423,7 @@ def report_check_lines(data: Dict[str, Any]) -> List[str]:
               "confirmed_cves_filed_as_unconfirmed": "confirmed CVEs listed as related or ruled out",
               "wrong_fix_wording": "fix versions misquoted",
               "unconfirmed_cves_filed_as_confirmed": "unconfirmed CVEs listed as confirmed",
+              "backport_fixed_cves_filed_as_confirmed": "CVEs the distro has fixed listed as confirmed",
               "upgrade_version_without_target_version": "upgrade versions named though no version was given",
               "wrong_exploit_claims": "exploit claims the data doesn't back"}
     return [f"{label}: {', '.join(found[key])}" for key, label in labels.items() if found.get(key)]
@@ -505,6 +507,11 @@ SOURCE_LABELS = {"shodan": "Shodan", "virustotal": "VirusTotal", "abuseipdb": "A
 
 
 def _initial_prompt(target: Target) -> str:
+    # The model's sense of "now" is its training cutoff; without the date, this year's CVEs look future-dated.
+    return f"Today's date is {datetime.now(timezone.utc):%Y-%m-%d} (UTC). " + _target_plan(target)
+
+
+def _target_plan(target: Target) -> str:
     if target.type == "software":
         version_clause = (f" and version={target.software_version!r}" if target.software_version
                           else " (no version given: state that results are generic and ask for a version)")
@@ -1248,6 +1255,7 @@ _ALL_FIXED = re.compile(r"\ball\b[^.\n]{0,60}?\b(?:fixed|addressed|resolved|patc
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n")
 _A_VERSION = re.compile(r"(?<![\w.])(\d+(?:\.\d+)+[a-z0-9]*)\b(?!\.?\d|%)", re.IGNORECASE)
 _SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+_CONDITIONAL = re.compile(r"\b(?:if|when|unless|older than|below|earlier than)\b|<", re.IGNORECASE)
 
 
 def _confirmed_and_fixed_after(evidence: Any) -> Tuple[set, Dict[str, str]]:
@@ -1272,13 +1280,14 @@ def _confirmed_and_fixed_after(evidence: Any) -> Tuple[set, Dict[str, str]]:
 def _cve_details(evidence: Any) -> Dict[str, Any]:
     """Per CVE: its fix ("in X" / "after X"), severity and public exploit, plus whether every version check
     ran without a version (so no upgrade target exists)."""
-    fixes, severity, exploits, statuses = {}, {}, {}, []
+    fixes, severity, exploits, statuses, backported = {}, {}, {}, [], set()
     stack = [evidence]
     while stack:
         node = stack.pop()
         if isinstance(node, list):
             stack.extend(node)
         elif isinstance(node, dict):
+            backported.update(str(i).upper() for i in node.get("fixed_by_backport") or [])
             if node.get("tool") == "version_check" and node.get("success"):
                 statuses.append(node.get("security_status"))
             cve = str(node.get("cve_id") or "").upper()
@@ -1293,7 +1302,7 @@ def _cve_details(evidence: Any) -> Dict[str, Any]:
                 if isinstance(node.get("public_exploit"), dict):
                     exploits[cve] = node["public_exploit"]
             stack.extend(node.values())
-    return {"fixes": fixes, "severity": severity, "exploits": exploits,
+    return {"fixes": fixes, "severity": severity, "exploits": exploits, "backported": backported,
             "no_version": bool(statuses) and all(s == "UNKNOWN_VERSION" for s in statuses)}
 
 
@@ -1306,6 +1315,13 @@ def _sections(report: str):
             section = ("unconfirmed" if _UNCONFIRMED_SECTION.match(heading)
                        else "confirmed" if heading.lower().startswith("confirmed") else None)
         yield section, line
+
+
+def _backported_in_confirmed(report: str, backported: set) -> List[str]:
+    """CVEs the distro has fixed in this package (FIXED_IN_PACKAGE) but the report lists under Confirmed."""
+    return sorted({m.upper() for section, line in _sections(report) if section == "confirmed"
+                   and not re.search(r"\bbackport", line, re.IGNORECASE)
+                   for m in _REPORT_IDS.findall(line) if m.upper() in backported})
 
 
 def _unconfirmed_in_confirmed(report: str, confirmed: set, known: set) -> List[str]:
@@ -1363,7 +1379,7 @@ def _misfiled_confirmed(report: str, confirmed: set) -> List[str]:
         if line.lstrip().startswith(("#", "**")) and heading:
             section = ("unconfirmed" if _UNCONFIRMED_SECTION.match(heading)
                        else "confirmed" if heading.lower().startswith("confirmed") else None)
-        if section:
+        if section and not re.search(r"\bnot (?:ruled out|related|unconfirmed)\b", line, re.IGNORECASE):
             found[section].update(m.upper() for m in _REPORT_IDS.findall(line) if m.upper() in confirmed)
     return sorted(found["unconfirmed"] - found["confirmed"])
 
@@ -1399,12 +1415,15 @@ def check_report(report: str, evidence: Any) -> Dict[str, Any]:
                     if not (name == "internet-facing" and has_host)  # Shodan shows what an IP or domain exposes
                     and _asserts(pattern, report) and not re.search(pattern, text, re.IGNORECASE))
     confirmed, fixed_after = _confirmed_and_fixed_after(evidence)
-    misfiled = _misfiled_confirmed(report, confirmed)
     details = _cve_details(evidence)
+    # A CVE the distro fixed by backport belongs under Ruled Out, even though NVD matched it.
+    misfiled = _misfiled_confirmed(report, confirmed - details["backported"])
     known = {m.upper() for m in _REPORT_IDS.findall(text)}
     not_confirmed = ([] if isinstance(evidence, dict) and evidence.get("target_type") == "cve"
                      else _unconfirmed_in_confirmed(report, confirmed, known))
-    no_version_upgrade = sorted(set(_UPGRADE_TO.findall(report))) if details["no_version"] else []
+    # Conditional advice ("if older than 1.13.6, upgrade to 1.13.6") is fine; naming a target for this one isn't.
+    no_version_upgrade = sorted({v for s in _SENTENCE_END.split(report) if not _CONDITIONAL.search(s)
+                                 for v in _UPGRADE_TO.findall(s)}) if details["no_version"] else []
     wrong_fix = sorted({f"{m.group(1).upper()} is fixed after {m.group(2)}, not in it"
                         for m in _FIXED_IN.finditer(report) if fixed_after.get(m.group(1).upper()) == m.group(2)})
     found = {"unverified_ids": ids, "unverified_versions": versions, "unverified_percents": percents,
@@ -1412,6 +1431,7 @@ def check_report(report: str, evidence: Any) -> Dict[str, Any]:
              "wrong_fix_wording": sorted(set(wrong_fix) | set(_all_fixed_too_low(report, confirmed, details["fixes"],
                                                                              details["severity"]))),
              "unconfirmed_cves_filed_as_confirmed": not_confirmed,
+             "backport_fixed_cves_filed_as_confirmed": _backported_in_confirmed(report, details["backported"]),
              "upgrade_version_without_target_version": no_version_upgrade,
              "wrong_exploit_claims": _wrong_exploit_claims(report, details["exploits"], known)}
     return {**{k: v for k, v in found.items() if v}, "ok": not any(found.values())}
