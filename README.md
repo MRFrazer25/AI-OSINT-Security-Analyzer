@@ -54,7 +54,7 @@ Private, loopback, link-local, CGNAT and other non-public addresses are rejected
 
 All of these offer free tiers. Check each provider for its current limits. Free tiers that matter here:
 
-* Cohere trial keys are for evaluation, limited to 1,000 calls a month, and Cohere may use trial inputs and outputs, de-identified, for research. Use a production key for real or sensitive work.
+* Cohere trial keys are for evaluation, limited to 1,000 calls a month, and Cohere may use trial inputs and outputs, de-identified, for research ([Cohere's privacy policy](https://cohere.com/privacy)). Use a production key for real or sensitive work: paid accounts are covered by Cohere's [enterprise data commitments](https://cohere.com/enterprise-data-commitments), including a training opt-out.
 * VirusTotal's free public API allows 4 lookups a minute and 500 a day, and [must not be used in commercial products or services](https://docs.virustotal.com/reference/public-vs-premium-api).
 * AbuseIPDB's [free plans](https://www.abuseipdb.com/legal) are for non-commercial personal projects, and its data must not be republished.
 * Shodan's InternetDB and CVEDB are free for non-commercial use only.
