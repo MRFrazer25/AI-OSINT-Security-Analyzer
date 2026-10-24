@@ -1568,9 +1568,24 @@ def _api_error_detail(resp: requests.Response, keys: ApiKeys) -> str:
     return f": {detail}" if detail else ""
 
 
+INJECTION_MARKER = "[instruction-like text removed]"
+# Phrasing aimed at an AI model rather than a person reading a banner or a record. Narrow on purpose, so ordinary
+# vulnerability wording ("allows attackers to bypass firewall rules") is never touched.
+_INSTRUCTION_LIKE = re.compile(
+    r"\b(?:ignore|disregard|forget|override)\b[^.\n]{0,40}?\b(?:previous|prior|above|earlier|all|your|the)\b"
+    r"[^.\n]{0,30}?\b(?:instructions?|prompts?|guidelines|directives)\b"
+    r"|\b(?:system|developer)\s+(?:prompt|message|instructions?|override)\s*:"
+    r"|\b(?:new|updated|revised)\s+instructions?\s*:"
+    r"|\byou\s+are\s+now\b[^.\n]{0,40}?\b(?:assistant|ai|model|mode|unrestricted)\b"
+    r"|\b(?:ai|llm|assistant|model)\s*(?:agents?)?\s*[:,]\s*(?:please\s+)?(?:ignore|report|say|tell|output|reply)\b"
+    r"|</?\s*(?:system|assistant|user)\s*>|\[/?INST\]|<\|im_(?:start|end)\|>",
+    re.IGNORECASE)
+
+
 def _clean_banner(text: str, limit: int) -> str:
+    """Third-party text made safe to hand to a model: no control characters, no instruction-like phrasing."""
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text or "")
-    return text[:limit]
+    return _INSTRUCTION_LIKE.sub(INJECTION_MARKER, text)[:limit]
 
 
 def resolve_domain(domain: str) -> Dict[str, Any]:
@@ -2622,9 +2637,11 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
         **({"package_advisories_note": f"The package advisory check failed ({package_error})."}
            if package_error else {}),
         "lists_shortened": {k: v for k, v in (
-            ("affected_cves", f"showing {min(len(affected), result_limit)} of {len(affected)}"
+            ("affected_cves", f"showing {min(len(affected), result_limit)} of {len(affected)} in full; the rest "
+                              "are in affected_cves_more, and nvd_lookup gives any one in full"
              if len(affected) > result_limit else None),
-            ("needs_review_cves", f"showing {max(3, result_limit // 2)} of {len(unanalyzed)}"
+            ("needs_review_cves", f"showing {max(3, result_limit // 2)} of {len(unanalyzed)} in full; the rest are "
+                                  "in needs_review_more, and nvd_lookup gives any one in full"
              if len(unanalyzed) > max(3, result_limit // 2) else None),
             ("ruled_out_examples", f"showing {not_affected_limit} of {len(not_affected)}"
              if len(not_affected) > not_affected_limit else None)) if v},
