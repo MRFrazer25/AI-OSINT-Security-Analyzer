@@ -565,3 +565,30 @@ def test_key_facts_name_other_domains_and_use_source_labels():
     facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
     assert facts["other.example resolves to"] == "1.2.3.4"
     assert facts["Sources that failed or were skipped"] == "NVD"
+
+
+def test_the_report_check_flags_unsupported_ids_numbers_and_claims():
+    check = {"tool": "version_check", "affected_cve_ids": ["CVE-2023-44487"], "upgrade_to_at_least": {"version": "1.26.3"},
+             "affected_cves": [{"cve_id": "CVE-2023-44487", "fixed_after": "1.25.2", "epss": {"percent": "99.99%"}}]}
+    data = {"tool_calls": [{"result": check}], "key_facts": [], "metadata": {"target": "nginx 1.20.1"},
+            "report_markdown": "CVE-2023-44487 (EPSS 99.99%) is fixed after 1.25.2; upgrade to 1.26.3."}
+    assert ai.report_check(data)["ok"] and ai.report_check_lines(data) == []
+    data["report_markdown"] = ("CVE-2026-11157 (EPSS 87.5%) shows nginx 1.20.1 is end-of-life and has no patch "
+                               "available. Upgrade to 1.22.1; the match is a false positive.")
+    lines = ai.report_check_lines(data)
+    assert lines == ["IDs no lookup returned: CVE-2026-11157", "versions not in the data: 1.22.1",
+                     "percentages not in the data: 87.5%",
+                     "claims no source makes: end-of-life, false positive, no patch available"]
+
+
+def test_the_cve_table_includes_the_short_entries_too():
+    check = {"tool": "version_check", "success": True, "software": "tomcat", "version": "9.0.30", "affected_count": 3,
+             "affected_cves": [{"cve_id": "CVE-2020-1938", "severity": "CRITICAL", "cvss_score": 9.8,
+                                "in_cisa_kev": True, "fixed_in": "9.0.31"}],
+             "affected_cves_more": [{"cve_id": "CVE-2020-13935", "severity": "HIGH", "cvss": 7.5, "epss": "86.61%",
+                                     "in_cisa_kev": False, "public_exploit": False, "fixed": "after 9.0.36"},
+                                    {"cve_id": "CVE-2020-13943", "severity": "MEDIUM", "cvss": 4.3, "epss": None,
+                                     "in_cisa_kev": False, "public_exploit": False, "fixed": "not listed"}]}
+    rows = ai.build_cve_table({"summary": {}, "tool_calls": [{"result": check}]})["rows"]
+    assert [r["CVE"] for r in rows] == ["CVE-2020-1938", "CVE-2020-13935", "CVE-2020-13943"]
+    assert rows[1]["EPSS %"] == 86.61 and rows[1]["Fixed in"] == "after 9.0.36" and rows[2]["Fixed in"] == "not listed"

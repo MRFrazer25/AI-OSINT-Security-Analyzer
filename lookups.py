@@ -848,7 +848,8 @@ def extract_cvss(cve: Dict[str, Any]) -> Dict[str, Any]:
         data = entry.get("cvssData", {})
         score = data.get("baseScore")
         severity = data.get("baseSeverity") or entry.get("baseSeverity") or severity_from_score(score)
-        return {"cvss_score": score, "cvss_version": label, "cvss_vector": data.get("vectorString"),
+        vector = re.sub(r"/[A-Z]{1,3}:X(?=/|$)", "", data.get("vectorString") or "") or None
+        return {"cvss_score": score, "cvss_version": label, "cvss_vector": vector,
                 "severity": str(severity).upper(), "cvss_source": entry.get("source")}
     return {"cvss_score": None, "cvss_version": None, "cvss_vector": None, "severity": "UNKNOWN", "cvss_source": None}
 
@@ -2390,6 +2391,29 @@ def cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
     return result
 
 
+MORE_LIMIT = 150  # short entries beyond the detailed ones; real products top out around 100 CVEs per version
+
+
+def _fixed_text(v: Dict[str, Any]) -> str:
+    return (v["fixed_in"] if v.get("fixed_in") else f"after {v['fixed_after']}" if v.get("fixed_after")
+            else "not listed")
+
+
+def _brief_affected(v: Dict[str, Any]) -> Dict[str, Any]:
+    """A confirmed CVE in a few fields, so every one reaches the model without the full record."""
+    return {"cve_id": v["cve_id"], "severity": v.get("severity"), "cvss": v.get("cvss_score"),
+            "epss": (v.get("epss") or {}).get("percent"), "in_cisa_kev": bool(v.get("in_cisa_kev")),
+            "public_exploit": bool(v.get("public_exploit")), "fixed": _fixed_text(v)}
+
+
+def _brief_review(v: Dict[str, Any]) -> Dict[str, Any]:
+    """A needs-review CVE with the start of its description, which names the product it's about."""
+    return {"cve_id": v["cve_id"], "severity": v.get("severity"), "cvss": v.get("cvss_score"),
+            "description": _clean_banner(_english_description(v) if "descriptions" in v
+                                         else v.get("description", ""), 160),
+            **({"description_covers_this_version": True} if v.get("description_covers_this_version") else {})}
+
+
 def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiKeys] = None,
                                          version: Optional[str] = None, result_limit: int = 10,
                                          not_affected_limit: int = 5) -> Dict[str, Any]:
@@ -2561,6 +2585,7 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
     else:
         status = "NO_KNOWN_VULNERABILITIES"
 
+    review_shown = max(3, result_limit // 2)
     severity_counts: Dict[str, int] = {}
     for v in affected:
         severity_counts[v["severity"]] = severity_counts.get(v["severity"], 0) + 1
@@ -2585,9 +2610,13 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
         "no_fix_listed_cves": no_fix,
         "affected_cve_ids": [v["cve_id"] for v in affected],  # every one, for distro_patch_check
         "affected_cves": affected[:result_limit],
+        **({"affected_cves_more": [_brief_affected(v) for v in affected[result_limit:MORE_LIMIT + result_limit]]}
+           if len(affected) > result_limit else {}),
         "needs_review_count": len(unanalyzed),
-        "needs_review_cves": unanalyzed[: max(3, result_limit // 2)],
+        "needs_review_cves": unanalyzed[:review_shown],
         "needs_review_cve_ids": [v["cve_id"] for v in unanalyzed],
+        **({"needs_review_more": [_brief_review(v) for v in unanalyzed[review_shown:MORE_LIMIT + review_shown]]}
+           if len(unanalyzed) > review_shown else {}),
         **({"package_advisories": {"package": package_ref, "added": advisories_added,
                                    "source": "GitHub Advisory Database via OSV.dev"}} if package_ref else {}),
         **({"package_advisories_note": f"The package advisory check failed ({package_error})."}
