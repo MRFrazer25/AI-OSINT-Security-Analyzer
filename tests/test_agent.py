@@ -731,3 +731,17 @@ def test_all_fixed_ignores_distro_package_versions():
              "affected_cve_ids": ["CVE-2024-6387"], "affected_cves": [{"cve_id": "CVE-2024-6387", "fixed_after": "9.8"}]}
     report = "- CVE-2026-35385, CVE-2026-35387 (all fixed in package 1:9.2p1-2+deb12u10)\n"
     assert "wrong_fix_wording" not in ai.check_report(report, {"tool_calls": [{"result": check}]})
+
+
+def test_key_facts_name_a_no_version_checks_known_exploited_cves():
+    check = {"tool": "version_check", "success": True, "software": "nginx", "version": None,
+             "security_status": "UNKNOWN_VERSION", "total_cves_for_product": 67,
+             "most_recent_cves": [{"cve_id": "CVE-2026-60005", "severity": "HIGH"}],
+             "older_cves_in_cisa_kev": [{"cve_id": "CVE-2023-44487", "severity": "HIGH", "in_cisa_kev": True}]}
+    records = [ai.ToolCallRecord(tool="version_specific_vulnerability_check", arguments={}, iteration=1,
+                                 timestamp="", duration_ms=0, result=check)]
+    result = ai.AgentResult(target=ai.classify_target("nginx"), report="", complexity="Quick Scan", model="m",
+                            tool_calls=records)
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert "in CISA KEV: CVE-2023-44487" in facts["nginx (no version given)"]
+    assert "CVE-2023-44487" in facts["CISA KEV: related (product family or vendor)"]
