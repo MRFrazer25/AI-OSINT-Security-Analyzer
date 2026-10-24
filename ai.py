@@ -511,12 +511,13 @@ def _initial_prompt(target: Target) -> str:
         plan = TARGET_PLANS["software"].format(value=target.value, name=target.software_name,
                                                version_clause=version_clause)
         if target.distro and target.software_version:
-            plan += (f" The target is a {target.distro} package build ({target.distro}-{target.distro_revision}),"
-                     f" and {target.distro} backports fixes without changing the upstream version: after the "
-                     f"version check, run distro_patch_check with distro={target.distro!r}, package_version="
-                     f"{target.software_version + '-' + target.distro_revision!r}, the package's "
-                     f"{target.distro} source name (usually the product in lowercase, e.g. 'openssh') and "
-                     "the affected CVE IDs.")
+            # The general rules (run a distro check, distro data overrides NVD) are in the system prompt; this
+            # only fills in this target's values.
+            plan += (f" It is a distro package build ({target.distro}-{target.distro_revision}): after the version "
+                     f"check, run distro_patch_check with distro={target.distro!r}, package_version="
+                     f"{target.software_version + '-' + target.distro_revision!r}, package="
+                     f"{target.software_name.lower()!r} (or the distro's source package name if that differs) "
+                     "and the affected CVE IDs.")
         return plan
     return TARGET_PLANS[target.type].format(value=target.value)
 

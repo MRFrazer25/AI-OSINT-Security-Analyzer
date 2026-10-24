@@ -631,7 +631,7 @@ def test_a_distro_package_build_in_the_target_is_split_off():
     target = ai.classify_target("OpenSSH 8.9p1 Ubuntu-3ubuntu0.6")
     assert (target.software_name, target.software_version) == ("OpenSSH", "8.9p1")
     assert (target.distro, target.distro_revision) == ("Ubuntu", "3ubuntu0.6")
-    assert "package_version='8.9p1-3ubuntu0.6'" in ai._initial_prompt(target)
+    assert "package_version='8.9p1-3ubuntu0.6', package='openssh'" in ai._initial_prompt(target)
     debian = ai.classify_target("OpenSSH_9.2p1 Debian-2+deb12u3")
     assert (debian.software_version, debian.distro_revision) == ("9.2p1", "2+deb12u3")
     assert ai.classify_target("Ubuntu-3ubuntu0.6").type == "invalid"

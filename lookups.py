@@ -2456,9 +2456,9 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
         return {"tool": "version_check", "error": "software_name is required"}
     given = str(version).strip() if version is not None else ""
     if _DISTRO_REVISION_RE.fullmatch(given):
-        return {"tool": "version_check", "error": f"{given!r} is a distro package revision, not the product's "
-                "version: in 'OpenSSH 8.9p1 Ubuntu-3ubuntu0.6' the version is 8.9p1. Retry with the upstream "
-                "version, then run distro_patch_check with the package version (e.g. 8.9p1-3ubuntu0.6)."}
+        return {"tool": "version_check", "error": f"{given!r} is a distro package revision, not {name}'s version "
+                "(the upstream version is the number before the revision). Retry with the upstream version, then run "
+                f"distro_patch_check with the package version (upstream version, '-', {given})."}
     version = extract_version(given) if given.lower() not in ("unknown", "none", "n/a", "") else None
     ignored = given[:40] if given and version is None and given.lower() not in ("unknown", "none", "n/a") else None
     if version and len(version) > MAX_VERSION_LENGTH:
