@@ -86,6 +86,8 @@ Open http://localhost:8501.
 
 ### Choosing a Cohere model
 
+**Why Cohere?** Cohere's free trial keys let anyone try the app without paying, and its Command A models are built for the multi-step tool use this agent depends on. To use the same checks with Claude, Cursor or another AI client, see the [MCP server](https://github.com/MRFrazer25/vulnerability-exposure-mcp).
+
 Pick the model in the app, next to "Analysis depth". Only models that support tool use are offered:
 
 | Model | Best for |
