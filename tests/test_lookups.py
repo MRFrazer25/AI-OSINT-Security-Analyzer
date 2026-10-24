@@ -1096,3 +1096,33 @@ def test_the_version_checked_is_named_when_it_differs_from_the_text_given(monkey
     r = t.version_specific_vulnerability_check("OpenSSH", version="OpenSSH_8.9p1 Ubuntu-3ubuntu0.6")
     assert r["version"] == "8.9p1" and r["version_note"].startswith("Checked version 8.9p1")
     assert "version_note" not in t.version_specific_vulnerability_check("OpenSSH", version="v8.9p1")
+
+
+def test_weakness_first_descriptions_and_inclusive_ranges_count():
+    # Real miss: recent Apache Tomcat CVEs never reached Needs Review because of how Apache words them.
+    text = ("Execution After Redirect (EAR) vulnerability in Apache Tomcat.\n\nThis issue affects Apache Tomcat: "
+            "from 11.0.0-M1 through 11.0.26, from 10.1.0-M1 through 10.1.60, from 9.0.0.M1 through 9.0.122.")
+    assert t._description_is_about(text, "tomcat", "apache")
+    assert t._description_is_about("Apache Tomcat 10.0.0-M1 to 10.0.6 did not", "tomcat", "apache")
+    assert not t._description_is_about("PhpSpreadsheet is a PHP library. A vulnerability in PHP", "php")
+    # ...without losing ones that open with the product and only then say "a vulnerability in" a module.
+    assert t._description_is_about("NGINX Plus and NGINX Open Source have a vulnerability in the "
+                                   "ngx_http_core_module module.", "nginx", "f5")
+    assert t._description_covers(text, "9.0.30") and not t._description_covers(text, "9.0.123")
+    assert t._description_covers("Apache Tomcat 10.0.0-M1 to 10.0.6", "10.0.6")
+    assert t._description_covers("from 2.4.0 before 2.4.56", "2.4.55") and not t._description_covers(
+        "from 2.4.0 before 2.4.56", "2.4.56")
+
+
+def test_a_github_advisory_id_gets_a_pointer_not_an_error():
+    r = t.nvd_lookup("GHSA-2464-fhr4-w9xw")
+    assert "error" not in r and "GitHub advisory ID" in r["info"]
+
+
+def test_unseen_ips_are_refused_and_seen_ones_allowed():
+    earlier = [{"tool": "dns", "ipv4": ["104.21.14.61"]}]
+    assert t.unseen_ip("ip_owner", {"ip_address": "104.21.14.61"}, "example.com", earlier) is None
+    assert t.unseen_ip("ip_owner", {"ip_address": "104.21.14.6"}, "example.com", earlier)  # not a prefix match
+    assert t.unseen_ip("shodan_search", {"target": "8.8.8.8"}, "8.8.8.8", []) is None  # the target itself
+    assert t.unseen_ip("shodan_search", {"target": "example.com"}, "x", []) is None  # domains aren't checked here
+    assert t.unseen_ip("cve_search", {"search_term": "1.1.1.1"}, "x", []) is None

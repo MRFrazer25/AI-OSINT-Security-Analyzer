@@ -18,7 +18,7 @@ except ImportError:
 
 from ai import (AVAILABLE_MODELS, COMPLEXITY_PROFILES, DEFAULT_MODEL, NVD_CVE_PAGE, build_cve_table,
                 build_markdown_export, build_report_data, escape_markdown, link_cves, run_agent,
-                sanitize_report_markdown)
+                sanitize_report_markdown, unverified_ids)
 from lookups import KEY_SIGNUP_URLS, ApiKeys, classify_target
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -337,8 +337,12 @@ if data:
 
     st.markdown("**AI assessment**")
     # The report can echo untrusted third-party text: render Markdown only (no HTML), with remote images removed.
+    unverified = unverified_ids(data)
+    if unverified:
+        st.warning("The AI report mentions IDs that no lookup returned, so they may be made up: "
+                   + escape_markdown(", ".join(unverified)) + ". They aren't linked; rely on the key facts and table.")
     # CVE IDs are then linked to NVD by code (link_cves), never to a URL the model wrote.
-    st.markdown(link_cves(sanitize_report_markdown(data["report_markdown"])))
+    st.markdown(link_cves(sanitize_report_markdown(data["report_markdown"]), unverified))
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = f"vulnerability_report_{safe_filename(meta['target'])}_{stamp}"

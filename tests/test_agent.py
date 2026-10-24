@@ -83,6 +83,7 @@ def test_bad_arguments_still_produce_tool_message_and_forced_final_report(monkey
 
 
 def test_quota_tools_are_capped_and_duplicates_cached(monkeypatch):
+    monkeypatch.setattr(ai, "unseen_ip", lambda *a: None)  # arbitrary IPs here; the guard has its own test
     calls = []
     monkeypatch.setitem(ai.TOOL_FUNCTIONS, "abuseipdb_check",
                         lambda ip_address, keys: calls.append(ip_address) or {"tool": "abuseipdb", "success": True})
@@ -537,3 +538,30 @@ def test_urls_in_the_report_are_shown_but_not_clickable():
     assert text == "Go to `https://evil.example/login`. Or `www.evil.example`, or `https://x.example`."
     assert ai.sanitize_report_markdown("```\nhttps://evil.example\n```") == "```\nhttps://evil.example\n```"
     assert ai.sanitize_report_markdown("mail abuse@example.com") == "mail abuse@example.com"
+
+
+def test_the_agent_cannot_look_up_an_ip_no_result_contained(monkeypatch):
+    calls = []
+    monkeypatch.setitem(ai.TOOL_FUNCTIONS, "ip_owner", lambda ip_address: calls.append(ip_address) or {"ok": 1})
+    client = FakeClient([_response([_call("a", "ip_owner", {"ip_address": "142.250.190.46"})]), _response(text="r")])
+    result = ai.run_agent("nginx 1.20.1", ApiKeys(), "Quick Scan", client=client)
+    assert calls == [] and "hasn't appeared" in result.tool_calls[-1].result["error"]
+
+
+def test_ids_no_lookup_returned_are_flagged_and_not_linked():
+    data = {"report_markdown": "See CVE-2021-44228, CVE-2026-11157 and GHSA-2464-fhr4-w9xw.",
+            "tool_calls": [{"result": {"affected_cve_ids": ["CVE-2021-44228"], "advisory": "GHSA-2464-FHR4-W9XW"}}]}
+    assert ai.unverified_ids(data) == ["CVE-2026-11157"]
+    linked = ai.link_cves(data["report_markdown"], ai.unverified_ids(data))
+    assert "[CVE-2021-44228](" in linked and "[CVE-2026-11157]" not in linked
+
+
+def test_key_facts_name_other_domains_and_use_source_labels():
+    records = [ai.ToolCallRecord("resolve_domain", {}, 1, "t", 1, {"tool": "dns", "success": True,
+               "domain": "other.example", "ipv4": ["1.2.3.4"], "ipv6": []}),
+               ai.ToolCallRecord("nvd_lookup", {}, 1, "error", 1, {"tool": "nvd", "error": "boom"})]
+    result = ai.AgentResult(target=ai.classify_target("example.com"), report="", complexity="Quick Scan", model="m",
+                            tool_calls=records)
+    facts = {f["label"]: f["value"] for f in ai.build_key_facts(result)}
+    assert facts["other.example resolves to"] == "1.2.3.4"
+    assert facts["Sources that failed or were skipped"] == "NVD"

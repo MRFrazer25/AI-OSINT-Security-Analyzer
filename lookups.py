@@ -322,6 +322,26 @@ _LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home.arpa", ".
 MAX_SOFTWARE_WORDS = 5  # longer text is a sentence, not a product name
 
 
+IP_LOOKUP_TOOLS = ("shodan_search", "virustotal_check", "abuseipdb_check", "ip_owner", "threat_lists_check")
+
+
+def unseen_ip(tool: str, args: Dict[str, Any], target: str, earlier_results: Sequence[Any]) -> Optional[str]:
+    """Why an IP lookup is refused: the address isn't the target and no earlier result in this investigation
+    mentions it, so the model made it up. None when the call is fine (not an IP lookup, or the IP was seen)."""
+    if tool not in IP_LOOKUP_TOOLS:
+        return None
+    raw = str(args.get("ip_address") or args.get("target") or "").strip().strip("[]")
+    try:
+        ip = str(ipaddress.ip_address(raw))
+    except ValueError:
+        return None  # a domain, or not an address at all: the tool itself validates it
+    if ip == target or re.search(rf"(?<![\w.:]){re.escape(ip)}(?![\w.:])", json.dumps(earlier_results, default=str)):
+        return None
+    return (f"{ip} hasn't appeared in this investigation (the target, DNS, Shodan or certificate logs), so it "
+            "wasn't looked up. Only check addresses the evidence shows; to check one the user gave, start a new "
+            "investigation for it.")
+
+
 def classify_target(raw: str) -> Target:
     """Normalise user input and classify it as ip, domain, cve or software."""
     if not raw or not isinstance(raw, str):
@@ -1565,7 +1585,7 @@ def _cdn_note(org: str, tags: Sequence[str]) -> Optional[str]:
     if "cdn" in (tags or []) or cdn_by_name:
         return ("This IP belongs to a CDN/edge network shared by many customers. Its open ports and services are "
                 "the CDN's, not the origin server's; the site owner can't close them and they are not findings "
-                "about the target.")
+                "about the target. Hostnames and domains listed for this IP belong to other customers of the CDN.")
     return None
 
 
@@ -2212,6 +2232,9 @@ def abuseipdb_check(ip_address: str, keys: ApiKeys, max_age_days: int = 90) -> D
 def nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limit: int = 5,
                config_limit: int = 5) -> Dict[str, Any]:
     """Full NVD record for one CVE, enriched with CISA KEV status and EPSS."""
+    if re.fullmatch(r"GHSA(?:-[0-9a-z]{4}){3}", (cve_id or "").strip(), re.IGNORECASE):
+        return {"tool": "nvd", "success": False, "info": f"{cve_id.strip()} is a GitHub advisory ID, not a CVE ID, so "
+                "NVD doesn't have it. Its details (severity, fixed version) are in the version check result."}
     cve_id = (cve_id or "").strip().upper()
     if not is_valid_cve(cve_id):
         return {"tool": "nvd", "error": f"Invalid CVE ID: {cve_id!r} (expected CVE-YYYY-NNNN)"}
@@ -2406,7 +2429,8 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
             "most_recent_cves": vulns,
             "note": ((f"{ignored!r} isn't a version number, so it was ignored. These are" if ignored
                       else "No version supplied: these are") + " the product's most recent CVEs, not confirmed to "
-                     "affect it."),
+                     "affect it. Put none of them under Confirmed, and don't name an upgrade version: without a "
+                     "version there is no upgrade target."),
         }
 
     affected, not_affected, unanalyzed = [], [], []
@@ -2550,6 +2574,7 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
         "affected_cves": affected[:result_limit],
         "needs_review_count": len(unanalyzed),
         "needs_review_cves": unanalyzed[: max(3, result_limit // 2)],
+        "needs_review_cve_ids": [v["cve_id"] for v in unanalyzed],
         **({"package_advisories": {"package": package_ref, "added": advisories_added,
                                    "source": "GitHub Advisory Database via OSV.dev"}} if package_ref else {}),
         **({"package_advisories_note": f"The package advisory check failed ({package_error})."}
@@ -2680,7 +2705,7 @@ def _recent_unanalyzed_cves(name: str, products: List[Tuple[str, str]], keys: Op
                                   "pubEndDate": end.strftime("%Y-%m-%dT23:59:59.999")}, keys)
     return [cve for cve in (v.get("cve", {}) for v in data.get("vulnerabilities", []))
             if cve.get("vulnStatus") in _UNANALYZED_STATUSES and cve.get("id") not in seen
-            and _description_is_about(_english_description(cve), term)]
+            and _description_is_about(_english_description(cve), term, products[0][0])]
 
 
 def _no_candidates_note(products: List[Tuple[str, str]], version: str, keys: Optional[ApiKeys]) -> Tuple[str, bool]:
@@ -2742,26 +2767,41 @@ def _keyword_fallback_cves(name: str, products: List[Tuple[str, str]], keys: Opt
 # How CVE descriptions usually open before naming the affected product.
 _DESCRIPTION_LEADS = re.compile(r"^(?:an? (?:issue|vulnerability|flaw|security issue) (?:has been |was )?"
                                 r"(?:discovered|found|identified|reported)? ?in |in |the )", re.IGNORECASE)
+# Weakness first, as Apache writes them: "Relative Path Traversal vulnerability in Apache Tomcat."
+_WEAKNESS_LEAD = re.compile(r"^[^.\n]{1,100}?\b(?:vulnerability|vulnerabilities|flaw|weakness) in (?:the )?",
+                            re.IGNORECASE)
 
 
 def _description_is_about(description: str, term: str, vendor: str = "*") -> bool:
     """Is the CVE about ``term`` itself? Its description opens with the product name ("GitLab has...",
-    "In PHP versions..."), not with another product that only mentions it ("PhpSpreadsheet is a pure PHP
-    library", "NextAuth.js provides authentication for Next.js")."""
-    text = _DESCRIPTION_LEADS.sub("", description.strip(), count=1)
-    if vendor != "*" and text.lower().startswith(vendor.lower() + " ") and not term.lower().startswith(vendor.lower()):
-        text = text[len(vendor) + 1:]  # "CONTEC SolarView Compact ..." is about "solarview compact"
-    return mentions_whole_words(text[:len(term) + 1], term) and text.lower().startswith(term.split()[0].lower())
+    "In PHP versions...", "Path Traversal vulnerability in Apache Tomcat"), not with another product that only
+    mentions it ("PhpSpreadsheet is a pure PHP library", "NextAuth.js provides authentication for Next.js")."""
+    def opens_with_term(text: str) -> bool:
+        if (vendor != "*" and text.lower().startswith(vendor.lower() + " ")
+                and not term.lower().startswith(vendor.lower())):
+            text = text[len(vendor) + 1:]  # "CONTEC SolarView Compact ..." is about "solarview compact"
+        return mentions_whole_words(text[:len(term) + 1], term) and text.lower().startswith(term.split()[0].lower())
+
+    text = description.strip()
+    return opens_with_term(_DESCRIPTION_LEADS.sub("", text, count=1)) or opens_with_term(
+        _WEAKNESS_LEAD.sub("", text, count=1))
 
 
-_DESCRIPTION_RANGE = re.compile(r"(?:from |versions? )?(\d+(?:\.\d+)+)\s+(?:before|until|up to|prior to)\s+"
-                                r"(\d+(?:\.\d+)+)", re.IGNORECASE)
+# A version in a description, with any milestone or pre-release suffix ("9.0.0.M1", "10.0.0-M1") ignored.
+_RANGE_VERSION = r"(\d+(?:\.\d+)+)(?:[.-]?(?:M|RC|alpha|beta)\d*)?"
+_DESCRIPTION_RANGE = re.compile(rf"(?:from |versions? )?{_RANGE_VERSION}\s+(?:before|until|up to|prior to)\s+"
+                                rf"{_RANGE_VERSION}", re.IGNORECASE)
+_DESCRIPTION_RANGE_INCLUSIVE = re.compile(rf"(?:from |versions? )?{_RANGE_VERSION}\s+(?:through|to)\s+"
+                                          rf"{_RANGE_VERSION}", re.IGNORECASE)
 
 
 def _description_covers(description: str, version: str) -> bool:
-    """True when a "from X before Y" style range in the description includes ``version`` (a hint, not a verdict)."""
-    return any(compare_versions(version, low) >= 0 and compare_versions(version, high) < 0
-               for low, high in _DESCRIPTION_RANGE.findall(description))
+    """True when a range in the description ("from X before Y", "X through Y") includes ``version`` (a hint,
+    not a verdict)."""
+    return (any(compare_versions(version, low) >= 0 and compare_versions(version, high) < 0
+                for low, high in _DESCRIPTION_RANGE.findall(description))
+            or any(compare_versions(version, low) >= 0 and compare_versions(version, high) <= 0
+                   for low, high in _DESCRIPTION_RANGE_INCLUSIVE.findall(description)))
 
 
 def _upgrade_with_review_note(upgrade: Optional[Dict[str, Any]], unanalyzed: List[Dict[str, Any]]):

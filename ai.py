@@ -10,12 +10,12 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import cohere
 
 from lookups import (KEV_RECENT_DAYS, KEY_SIGNUP_URLS, TOOL_FUNCTIONS, ApiKeys, Target, classify_target,
-                     epss_percent, is_valid_cve, normalize_software_name, redact)
+                     epss_percent, is_valid_cve, normalize_software_name, redact, unseen_ip)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,11 @@ Rules:
 - Do not present CVEs for a vendor's other product lines (e.g. a vendor's server/management platform when the target is its camera or DVR) as risks to this target. Mention them at most as unrelated vendor history.
 - CVEs from a keyword search that are about unrelated products are neither "Related" nor "Ruled Out": leave them out, or note in one line that the search only found unrelated products. A different product from the same vendor (e.g. the vendor's doorbell when the target is its DVR) is vendor history, not a finding.
 - Don't add facts no tool provided: no release dates, end-of-life claims, enabled modules or configuration details unless a tool result states them.
+- A software or CVE target has no host: under Exposure & Services write only "Not checked: no host was given." Never call a service internet-facing, end-of-life or unpatched unless a tool result says so.
+- Say a product has CISA KEV history only when cisa_kev_check returned total_kev_entries above 0 for it.
+- Use each reputation source's threat_level as given (one engine flagging a target is LOW), and don't infer phishing or malice beyond what the sources say.
+- Recommend only what the target's owner can do. For a CDN edge IP or a large provider's public service (e.g. Google's DNS), don't suggest changing its ports or settings.
+- Use only CVE and advisory IDs that appear in tool results. When a list says "showing N of M", name the rest from its *_ids list or give a count; never fill in IDs.
 - For upgrade advice, use the version check's upgrade_to_at_least value exactly. Never recommend a lower version, and don't claim one version fixes everything unless that field says so.
 - A banner showing "401 Unauthorized" or a login prompt means the service requires authentication; don't call it unauthenticated.
 - Write version ranges in words ("before 1.21.0", "from 2.4.0 through 2.4.55"), not with < or > symbols.
@@ -188,7 +193,7 @@ A Markdown table: Finding | Severity | Evidence (source).
 Subsections that apply: Exposure & Services, Threat Intelligence & Reputation, Vulnerabilities, Exploitation Status (KEV, EPSS).
 Inside Vulnerabilities use exactly these headings, and write "None" under any that is empty:
 - Confirmed: CVEs NVD version-matched to this exact product version (status AFFECTED), or the CVE being analysed.
-  Under Confirmed, give a Markdown table with exactly these columns: CVE | Severity | EPSS | In KEV | Fixed in. Most urgent first (in KEV, then EPSS), at most 10 rows, then say how many more there are. Keep each cell short ("Yes"/"No", "12.3%", "1.26.3") so the table fits a phone screen. Don't write links: the app links each CVE ID to its NVD page itself.
+  Under Confirmed, don't write a CVE table: the app shows one built from the tool data beside your report. Name the most urgent confirmed CVEs in a sentence or two and give the total. For a fixed version, fixed_in X is "X" and fixed_after X is "after X" (never "X or later"). Don't write links: the app links each CVE ID to its NVD page itself.
 - Related (unconfirmed): product-family or vendor-level matches, including product-level CISA KEV matches. Quote their EPSS.
 - Needs Review: CVEs NVD hasn't analysed yet for this product, or products whose version is unknown.
 - Ruled Out: CVEs NVD shows do NOT affect this version. "No data found" is not "ruled out"; list it under Limitations instead.
@@ -350,19 +355,29 @@ def escape_markdown(text: Any) -> str:
 
 
 NVD_CVE_PAGE = "https://nvd.nist.gov/vuln/detail/"
+_ID_IN_TEXT = re.compile(r"\b(?:CVE-(?:1999|20\d{2})-\d{4,7}|GHSA(?:-[0-9a-z]{4}){3})\b", re.IGNORECASE)
+
+
+def unverified_ids(data: Dict[str, Any]) -> List[str]:
+    """CVE and GitHub advisory IDs the AI report mentions but no tool result contains: likely made up."""
+    known = {m.upper() for m in _ID_IN_TEXT.findall(json.dumps(data.get("tool_calls", []), default=str))}
+    return sorted({m.upper() for m in _ID_IN_TEXT.findall(data.get("report_markdown") or "")} - known)
 # A CVE ID in escaped Markdown ("CVE-2021-44228" or "CVE\-2021\-44228"), but not inside a URL or word, and not
 # after "!", which would make the link an image the browser loads by itself.
 _CVE_MENTION = re.compile(r"(?<![\w/\\`=?&#.!-])CVE(\\?-)(1999|20\d{2})\1(\d{4,7})(?![\w`-])", re.IGNORECASE)
 
 
-def link_cves(markdown: str) -> str:
+def link_cves(markdown: str, unverified: Sequence[str] = ()) -> str:
     """Link each CVE ID in already-escaped Markdown to its NVD page.
 
     The link is built here from the ID's digits alone, so neither the model nor third-party text can choose
     where it points; links they write are still shown as plain text by sanitize_report_markdown.
     """
+    skip = {i.upper() for i in unverified}
+
     def link(m: re.Match) -> str:
-        return f"[{m.group(0)}]({NVD_CVE_PAGE}CVE-{m.group(2)}-{m.group(3)})"
+        cve_id = f"CVE-{m.group(2)}-{m.group(3)}"
+        return m.group(0) if cve_id.upper() in skip else f"[{m.group(0)}]({NVD_CVE_PAGE}{cve_id})"
 
     # Not in code, where a link would show as raw text.
     return _outside_code(markdown, lambda part: _CVE_MENTION.sub(link, part))
@@ -447,9 +462,10 @@ def _describe_cohere_error(exc: Exception, keys: ApiKeys) -> str:
 
 
 class _ToolRunner:
-    def __init__(self, keys: ApiKeys, profile: Dict[str, int]):
+    def __init__(self, keys: ApiKeys, profile: Dict[str, int], target: str = ""):
         self.keys = keys
         self.profile = profile
+        self.target = target
         self.records: List[ToolCallRecord] = []
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._counts: Dict[str, int] = {}
@@ -491,6 +507,9 @@ class _ToolRunner:
             return {"tool": name, "error": f"Unknown tool: {name}"}
         if self.calls_used >= self.profile["max_tool_calls"]:
             return {"tool": name, "error": "Tool-call budget for this analysis is exhausted. Write the report now."}
+        refused = unseen_ip(name, args, self.target, [r.result for r in self.records])
+        if refused:
+            return {"tool": name, "error": refused}
 
         cache_key = name + json.dumps(args, sort_keys=True, default=str)
         if cache_key in self._cache:
@@ -555,7 +574,7 @@ def run_agent(target_input: str, api_keys: ApiKeys, complexity_level: str = "Sta
         client = cohere.ClientV2(api_key=api_keys.cohere, timeout=120,
                                  client_name="ai-vulnerability-exposure-analyzer")
 
-    runner = _ToolRunner(api_keys, profile)
+    runner = _ToolRunner(api_keys, profile, target.value)
     baseline = _run_baseline(target, runner, emit)
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -727,7 +746,9 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
         r = defaultdict(lambda: "?", r)  # a missing field shows as "?" instead of breaking the whole box
         tool = r.get("tool")
         if tool == "dns":
-            add("Resolves to", ", ".join(r.get("ipv4", []) + r.get("ipv6", [])) or "no public addresses")
+            domain = r.get("domain")
+            add("Resolves to" if domain in ("?", result.target.value) else f"{domain} resolves to",
+                ", ".join(r.get("ipv4", []) + r.get("ipv6", [])) or "no public addresses")
         elif tool == "shodan" and r.get("data_source"):
             add("Open ports (Shodan InternetDB, no key)", ", ".join(str(p) for p in r.get("open_ports", [])) or "none recorded")
             sw = [f"{s['name']} {s['version']}".strip() if s.get("version") else s["name"]
@@ -774,7 +795,8 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
             add("Open ports (Shodan)", "; ".join(ports) or "none recorded")
             if r.get("cdn_note"):
                 add("CDN or edge network", "these ports belong to the CDN, shared by many customers; they aren't "
-                                           "findings about the site behind it")
+                                           "findings about the site behind it and its owner can't close them. "
+                                           "Hostnames listed for the IP are other CDN customers")
             org = ", ".join(x for x in (r.get("organization"), r.get("asn"), r.get("country")) if x)
             if org:
                 add("Network", org)
@@ -936,7 +958,7 @@ def build_key_facts(result: AgentResult) -> List[Dict[str, str]]:
     reported = {"shodan", "virustotal", "abuseipdb"} if result.target.type in ("ip", "domain") else set()
     failed = sorted(set(errors) - reported)
     if failed:
-        add("Sources that failed or were skipped", ", ".join(failed))
+        add("Sources that failed or were skipped", ", ".join(SOURCE_LABELS.get(f, f) for f in failed))
     return facts
 
 
@@ -1087,7 +1109,10 @@ def build_markdown_export(data: Dict[str, Any]) -> str:
         f"- Generated: {escape_markdown(meta['generated_at'])}\n- Model: {escape_markdown(meta['model'])}\n\n"
         "## Key Facts (computed from the data sources)\n\n"
         + "".join(f"- **{escape_markdown(f['label'])}:** {escape_markdown(f['value'])}\n" for f in facts)
-        + f"\n{sanitize_report_markdown(data['report_markdown'])}\n\n---\n"
+        + f"\n{sanitize_report_markdown(data['report_markdown'])}\n\n"
+        + ("> Unverified: the report mentions IDs no lookup returned: "
+           f"{escape_markdown(', '.join(unverified_ids(data)))}\n\n" if unverified_ids(data) else "")
+        + "---\n"
         f"Software found: {', '.join(escape_markdown(s) for s in summary['discovered_software']) or 'none'}  \n"
         f"CISA KEV confirmed for this target: {escape_markdown(', '.join(summary['cisa_kev_confirmed'])) or 'none'}  \n"
         "CISA KEV related (product family/vendor, unconfirmed): "
