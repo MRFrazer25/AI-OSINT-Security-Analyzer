@@ -612,3 +612,16 @@ def test_the_cve_table_includes_the_short_entries_too():
     rows = ai.build_cve_table({"summary": {}, "tool_calls": [{"result": check}]})["rows"]
     assert [r["CVE"] for r in rows] == ["CVE-2020-1938", "CVE-2020-13935", "CVE-2020-13943"]
     assert rows[1]["EPSS %"] == 86.61 and rows[1]["Fixed in"] == "after 9.0.36" and rows[2]["Fixed in"] == "not listed"
+
+
+def test_the_report_check_catches_misfiled_cves_and_misquoted_fixes():
+    check = {"tool": "version_check", "affected_cve_ids": ["CVE-2023-44487", "CVE-2020-1938"],
+             "affected_cves": [{"cve_id": "CVE-2023-44487", "fixed_after": "9.0.80"},
+                               {"cve_id": "CVE-2020-1938", "fixed_in": "9.0.31"}]}
+    report = ("#### Confirmed\n- CVE-2020-1938, fixed in 9.0.31\n\n**Related (unconfirmed):**\n"
+              "- CVE-2023-44487 (HTTP/2 Rapid Reset) fixed in 9.0.80\n\n#### Ruled Out\n- None\n")
+    found = ai.check_report(report, {"tool_calls": [{"result": check}]})
+    assert found["confirmed_cves_filed_as_unconfirmed"] == ["CVE-2023-44487"]
+    assert found["wrong_fix_wording"] == ["CVE-2023-44487 is fixed after 9.0.80, not in it"]
+    good = "#### Confirmed\n- CVE-2023-44487, fixed after 9.0.80\n- CVE-2020-1938, fixed in 9.0.31\n"
+    assert ai.check_report(good, {"tool_calls": [{"result": check}]})["ok"]

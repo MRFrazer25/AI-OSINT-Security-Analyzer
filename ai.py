@@ -403,7 +403,9 @@ def report_check_lines(data: Dict[str, Any]) -> List[str]:
     found = report_check(data)
     labels = {"unverified_ids": "IDs no lookup returned", "unverified_versions": "versions not in the data",
               "unverified_percents": "percentages not in the data",
-              "unsupported_claims": "claims no source makes"}
+              "unsupported_claims": "claims no source makes",
+              "confirmed_cves_filed_as_unconfirmed": "confirmed CVEs listed as related or ruled out",
+              "wrong_fix_wording": "fix versions misquoted"}
     return [f"{label}: {', '.join(found[key])}" for key, label in labels.items() if found.get(key)]
 # A CVE ID in escaped Markdown ("CVE-2021-44228" or "CVE\-2021\-44228"), but not inside a URL or word, and not
 # after "!", which would make the link an image the browser loads by itself.
@@ -1204,6 +1206,45 @@ _UNSUPPORTED_CLAIMS = {
 }
 
 
+_FIXED_IN = re.compile(r"\b(CVE-\d{4}-\d{4,7})\b[^\n]{0,120}?\bfixed in (?:version )?(\d+(?:\.\d+)+[a-z0-9]*)\b",
+                       re.IGNORECASE)
+_UNCONFIRMED_SECTION = re.compile(r"^(?:related|ruled out)\b", re.IGNORECASE)
+
+
+def _confirmed_and_fixed_after(evidence: Any) -> Tuple[set, Dict[str, str]]:
+    """Every CVE a version check confirmed, and each CVE's "fixed after" version, from the tool results."""
+    confirmed, fixed_after = set(), {}
+    stack = [evidence]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, dict):
+            confirmed.update(str(i).upper() for i in node.get("affected_cve_ids") or [])
+            cve = str(node.get("cve_id") or "").upper()
+            fixed = node.get("fixed_after") or (str(node["fixed"])[6:] if str(node.get("fixed") or "")
+                                                .startswith("after ") else None)
+            if cve and fixed:
+                fixed_after[cve] = str(fixed)
+            stack.extend(node.values())
+    return confirmed, fixed_after
+
+
+def _misfiled_confirmed(report: str, confirmed: set) -> List[str]:
+    """Confirmed CVEs the report lists under Related or Ruled Out and never under Confirmed. (Mentioning one
+    again under Related, say to explain its KEV entry, is fine.)"""
+    found = {"confirmed": set(), "unconfirmed": set()}
+    section = None
+    for line in report.splitlines():
+        heading = line.strip().lstrip("#").strip().strip("*").strip().rstrip(":").strip()
+        if line.lstrip().startswith(("#", "**")) and heading:
+            section = ("unconfirmed" if _UNCONFIRMED_SECTION.match(heading)
+                       else "confirmed" if heading.lower().startswith("confirmed") else None)
+        if section:
+            found[section].update(m.upper() for m in _REPORT_IDS.findall(line) if m.upper() in confirmed)
+    return sorted(found["unconfirmed"] - found["confirmed"])
+
+
 def _asserts(pattern: str, report: str) -> bool:
     """Does the report state the claim, rather than hedge it ("unknown if it is internet-facing")?"""
     return any(not re.search(r"\b(?:if|whether|unknown|not|no evidence)\b[^.\n]{0,30}$", report[:m.start()],
@@ -1234,6 +1275,11 @@ def check_report(report: str, evidence: Any) -> Dict[str, Any]:
     claims = sorted(name for name, pattern in _UNSUPPORTED_CLAIMS.items()
                     if not (name == "internet-facing" and has_host)  # Shodan shows what an IP or domain exposes
                     and _asserts(pattern, report) and not re.search(pattern, text, re.IGNORECASE))
+    confirmed, fixed_after = _confirmed_and_fixed_after(evidence)
+    misfiled = _misfiled_confirmed(report, confirmed)
+    wrong_fix = sorted({f"{m.group(1).upper()} is fixed after {m.group(2)}, not in it"
+                        for m in _FIXED_IN.finditer(report) if fixed_after.get(m.group(1).upper()) == m.group(2)})
     found = {"unverified_ids": ids, "unverified_versions": versions, "unverified_percents": percents,
-             "unsupported_claims": claims}
+             "unsupported_claims": claims, "confirmed_cves_filed_as_unconfirmed": misfiled,
+             "wrong_fix_wording": wrong_fix}
     return {**{k: v for k, v in found.items() if v}, "ok": not any(found.values())}
