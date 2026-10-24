@@ -1076,3 +1076,23 @@ def test_redirect_loops_and_oversized_responses_are_cut_off(monkeypatch):
     monkeypatch.setattr(t.requests, "get", lambda url, **k: _Wire(url, body=b"x" * 5000))
     with pytest.raises(t.SourceError, match="is over"):
         t._http_get("https://api.example/x")
+
+
+def test_mistyped_versions_and_names_get_a_clear_answer(monkeypatch):
+    monkeypatch.setattr(t, "_resolve_products", lambda name, keys: [])
+    r = t.version_specific_vulnerability_check("ngnix", version="1.20.1")
+    assert r["did_you_mean"] == ["nginx"] and "Did you mean nginx?" in r["info"]
+    assert "Try cve_search" in t.version_specific_vulnerability_check("FakeProduct", version="1.0")["info"]
+    err = t.version_specific_vulnerability_check("nginx", version="1.2O.1")["error"]
+    assert "Did you mean 1.20.1?" in err
+    assert t.classify_target("CVE-2099-12345").type == "invalid"
+
+
+def test_the_version_checked_is_named_when_it_differs_from_the_text_given(monkeypatch):
+    monkeypatch.setattr(t, "_resolve_products", lambda name, keys: [("openbsd", "openssh")])
+    monkeypatch.setattr(t, "_nvd_get", lambda url, params, keys: {"totalResults": 0, "vulnerabilities": []})
+    monkeypatch.setattr(t, "_nvd_most_recent", lambda params, keys, limit: (0, []))
+    monkeypatch.setattr(t, "_package_advisories", lambda products, version: (None, [], set()))
+    r = t.version_specific_vulnerability_check("OpenSSH", version="OpenSSH_8.9p1 Ubuntu-3ubuntu0.6")
+    assert r["version"] == "8.9p1" and r["version_note"].startswith("Checked version 8.9p1")
+    assert "version_note" not in t.version_specific_vulnerability_check("OpenSSH", version="v8.9p1")

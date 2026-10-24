@@ -11,6 +11,7 @@ users of a shared deployment never see or use each other's keys.
 from __future__ import annotations
 
 import csv
+import difflib
 import io
 import ipaddress
 import json
@@ -339,6 +340,8 @@ def classify_target(raw: str) -> Target:
         value = host
 
     if is_valid_cve(value):
+        if int(value[4:8]) > datetime.now(timezone.utc).year + 1:
+            return Target(value, "invalid", f"{value.upper()} can't exist yet: its year is in the future.")
         return Target(value.upper(), "cve")
     if re.fullmatch(r"CVE-\d+-\d+", value, re.IGNORECASE):
         return Target(value, "invalid", f"{value} isn't a valid CVE ID (they look like CVE-2021-44228, from 1999 on).")
@@ -474,6 +477,9 @@ _GENERIC_SOFTWARE_NAMES = {"all", "any", "none", "unknown", "n/a", "software", "
                            "web", "http", "https", "device", "devices", "firmware", "application", "app"}
 _DAEMON_SUFFIXES = re.compile(r"\s+(?:httpd|smtpd|imapd|pop3d|sshd|ftpd|server|daemon)$")
 _PRERELEASE_WORDS = {"alpha", "beta", "rc", "pre", "dev", "snapshot"}
+# A letter O inside a dotted number ("1.2O.1", "1.O.2"), a common typo for zero. A trailing letter is left
+# alone, since versions like OpenSSL's 1.1.1o are real.
+_LETTER_O_IN_NUMBER = re.compile(r"(?<=\d)[oO](?=[\d.])|(?<=\.)[oO](?=[\d.])")
 
 
 def normalize_software_name(name: str) -> str:
@@ -2360,14 +2366,26 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
     ignored = given[:40] if given and version is None and given.lower() not in ("unknown", "none", "n/a") else None
     if version and len(version) > MAX_VERSION_LENGTH:
         return {"tool": "version_check", "error": f"Version is too long (max {MAX_VERSION_LENGTH} characters)."}
+    if _LETTER_O_IN_NUMBER.search(given):
+        meant = _LETTER_O_IN_NUMBER.sub(lambda m: m.group().replace("o", "0").replace("O", "0"), given)
+        return {"tool": "version_check", "error": f"{given[:40]!r} has a letter O where a zero would go. Did you "
+                                                  f"mean {meant[:40]}? Retry with the exact version."}
+    # Say so when the version checked isn't the text given ("OpenSSH_8.9p1 Ubuntu" is checked as 8.9p1).
+    version_note = (f"Checked version {version}, read from {given[:60]!r}. If that isn't the version meant, retry "
+                    "with the exact number." if version and version != given.lstrip("vV") else None)
 
     try:
         products = _resolve_products(name, keys)
     except SourceError as exc:
         return {"tool": "version_check", "error": str(exc)}
     if not products:
+        close = difflib.get_close_matches(normalize_software_name(name),
+                                          [*SOFTWARE_CPE_ALIASES, *_PRODUCT_FAMILIES], n=3, cutoff=0.8)
+        hint = (f" Did you mean {' or '.join(close)}? If so, retry with that name." if close
+                else " Try cve_search instead.")
         return {"tool": "version_check", "success": False, "software": name,
-                "info": f"Could not map {name!r} to an NVD product (CPE). Try cve_search instead."}
+                "info": f"Could not map {name!r} to an NVD product (CPE).{hint}",
+                **({"did_you_mean": close} if close else {})}
 
     if not version:
         try:
@@ -2386,8 +2404,8 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
             "security_status": "UNKNOWN_VERSION",
             "total_cves_for_product": total,
             "most_recent_cves": vulns,
-            "note": ((f"{ignored!r} isn't a version number, so it was ignored. " if ignored
-                      else "No version supplied: ") + "these are the product's most recent CVEs, not confirmed to "
+            "note": ((f"{ignored!r} isn't a version number, so it was ignored. These are" if ignored
+                      else "No version supplied: these are") + " the product's most recent CVEs, not confirmed to "
                      "affect it."),
         }
 
@@ -2515,6 +2533,7 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
         "success": True,
         "software": name,
         "version": version,
+        **({"version_note": version_note} if version_note else {}),
         "cpe_products": [f"{v}:{p}" for v, p in products],
         "security_status": status,
         "affected_count": len(affected),
