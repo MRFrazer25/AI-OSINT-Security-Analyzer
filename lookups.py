@@ -2424,7 +2424,9 @@ def cisa_kev_check(cve_ids: Optional[Sequence[str]] = None,
             for name, hits in software_matches.items()
         }
         result["software_note"] = ("Product-level KEV matches show that this product has had exploited flaws; "
-                                   "they do NOT mean the target's version is affected.")
+                                   "they do NOT mean the target's version is affected. KEV files some CVEs under a "
+                                   "protocol or library instead (HTTP/2 Rapid Reset is under IETF HTTP/2), so 0 here "
+                                   "doesn't overrule a version check's in_cisa_kev for a CVE.")
     return result
 
 
@@ -2490,17 +2492,23 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
 
     if not version:
         try:
-            total, cves = 0, []
+            total, cves, kev = 0, [], []
             for vendor, product in products:
-                count, found = _nvd_most_recent({"virtualMatchString": f"cpe:2.3:*:{vendor}:{product}"}, keys,
-                                                result_limit)
+                match = {"virtualMatchString": f"cpe:2.3:*:{vendor}:{product}"}
+                count, found = _nvd_most_recent(match, keys, result_limit)
                 total, cves = total + count, cves + found
+                if count:
+                    kev += [v.get("cve", {}) for v in _nvd_get(NVD_CVE_URL, {**match, "hasKev": ""},
+                                                               keys).get("vulnerabilities", [])]
         except SourceError as exc:
             return {"tool": "version_check", "error": str(exc)}
         cves = list({c.get("id"): c for c in sorted(cves, key=lambda c: c.get("published", ""))}.values())
         cves = sorted(cves, key=lambda c: c.get("published", ""), reverse=True)[:result_limit]
+        shown = {c.get("id") for c in cves}
+        kev = list({c.get("id"): c for c in kev if c.get("id") not in shown}.values())[:result_limit]
         vulns = [summarize_nvd_cve(c, description_limit=250, reference_limit=0) for c in cves]
-        _enrich_with_exploit_intel(vulns)
+        kev_vulns = [summarize_nvd_cve(c, description_limit=250, reference_limit=0) for c in kev]
+        _enrich_with_exploit_intel(vulns + kev_vulns)
         return {
             "tool": "version_check",
             "success": True,
@@ -2510,6 +2518,7 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
             "security_status": "UNKNOWN_VERSION",
             "total_cves_for_product": total,
             "most_recent_cves": vulns,
+            **({"older_cves_in_cisa_kev": kev_vulns} if kev_vulns else {}),
             "note": ((f"{ignored!r} isn't a version number, so it was ignored. These are" if ignored
                       else "No version supplied: these are") + " the product's most recent CVEs, not confirmed to "
                      "affect it. Put none of them under Confirmed, and don't recommend upgrading to a version: "

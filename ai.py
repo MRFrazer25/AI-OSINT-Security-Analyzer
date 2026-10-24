@@ -1357,7 +1357,9 @@ def _all_fixed_too_low(report: str, confirmed: set, fixes: Dict[str, Any], sever
     wrong = set()
     for sentence in _SENTENCE_END.split(report):
         claim = _ALL_FIXED.search(sentence)
-        versions = list(_A_VERSION.finditer(sentence)) if claim else []
+        # Upstream versions only: "1:9.2p1-2+deb12u10" (a distro package's version) isn't release 9.2p1.
+        versions = [v for v in _A_VERSION.finditer(sentence) if not re.match(r"[-~+]", sentence[v.end():])
+                    and not sentence[:v.start()].endswith(":")] if claim else []
         if not versions:
             continue
         named = min(versions, key=lambda v: min(abs(v.start() - claim.end()), abs(claim.start() - v.end())))
@@ -1368,7 +1370,8 @@ def _all_fixed_too_low(report: str, confirmed: set, fixes: Dict[str, Any], sever
                 continue
             order = compare_versions(named.group(1), fix)
             if order < 0 or (kind == "after" and order == 0):
-                wrong.add(f"not all fixed in {named.group(1)}: {cve} is fixed {kind} {fix}")
+                wrong.add(f"not all fixed in {named.group(1)}: {cve} is fixed {kind} {fix} "
+                          f"(\"{' '.join(sentence.split())[:80]}\")")
                 break
     return sorted(wrong)
 

@@ -668,7 +668,8 @@ def test_the_report_check_catches_wrong_exploit_and_all_fixed_claims():
     assert [f.split(" (")[0] for f in found["wrong_exploit_claims"]] == [
         "CVE-2023-38408 has no public exploit in the data", "CVE-2024-6387's Exploit-DB entry isn't verified"]
     assert "EPSS 79.70% and a public exploit" in found["wrong_exploit_claims"][0]  # the sentence is quoted
-    assert found["wrong_fix_wording"] == ["not all fixed in 9.3: CVE-2026-60002 is fixed in 10.4"]
+    assert [f.split(" (")[0] for f in found["wrong_fix_wording"]] == [
+        "not all fixed in 9.3: CVE-2026-60002 is fixed in 10.4"]
     good = ("- CVE-2024-6387 has a public exploit (Exploit-DB 52269, unverified). CVE-2023-38408 has no public "
             "exploit listed.\n1. Upgrade to 10.4 or later to address all CRITICAL vulnerabilities\n")
     assert ai.check_report(good, {"tool_calls": [{"result": check}]})["ok"]
@@ -723,3 +724,10 @@ def test_cves_the_distro_says_are_open_in_the_package_count_as_confirmed():
     found = ai.check_report(report, evidence)
     assert "unconfirmed_cves_filed_as_confirmed" not in found
     assert "CVE-2025-26466 has no public exploit in the data" in found["wrong_exploit_claims"][0]
+
+
+def test_all_fixed_ignores_distro_package_versions():
+    check = {"tool": "version_check", "success": True, "security_status": "VULNERABLE",
+             "affected_cve_ids": ["CVE-2024-6387"], "affected_cves": [{"cve_id": "CVE-2024-6387", "fixed_after": "9.8"}]}
+    report = "- CVE-2026-35385, CVE-2026-35387 (all fixed in package 1:9.2p1-2+deb12u10)\n"
+    assert "wrong_fix_wording" not in ai.check_report(report, {"tool_calls": [{"result": check}]})
