@@ -188,8 +188,9 @@ with st.expander("API Keys Configuration", expanded=not effective_keys().cohere)
     key_message = st.empty()
     if saved:
         for name, value in entered.items():
-            if value.strip():
-                st.session_state.user_keys[name] = value.strip()
+            value = value.strip().strip("\"'").strip()  # a key copied with quotes or spaces around it
+            if value:
+                st.session_state.user_keys[name] = value
         key_message.success("Keys saved for this session.")
     if cleared:
         st.session_state.user_keys = {}

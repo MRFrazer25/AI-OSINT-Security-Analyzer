@@ -2200,8 +2200,9 @@ def abuseipdb_check(ip_address: str, keys: ApiKeys, max_age_days: int = 90) -> D
                 "error": f"AbuseIPDB rejected the API key (HTTP {resp.status_code}){_api_error_detail(resp, keys)}"}
     if resp.status_code == 429:
         return {"tool": "abuseipdb", "error": "AbuseIPDB daily quota exceeded"}
-    if resp.status_code != 200:
-        return {"tool": "abuseipdb", "error": f"AbuseIPDB returned HTTP {resp.status_code}"}
+    if resp.status_code != 200:  # e.g. 422 for a bad parameter; AbuseIPDB explains it in its errors list
+        return {"tool": "abuseipdb",
+                "error": f"AbuseIPDB returned HTTP {resp.status_code}{_api_error_detail(resp, keys)}"}
 
     try:
         data = resp.json().get("data", {}) or {}

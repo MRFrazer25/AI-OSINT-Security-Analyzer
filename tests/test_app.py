@@ -144,3 +144,10 @@ def test_a_rejected_target_is_repeated_back_as_plain_text():
     at.session_state["user_keys"] = {"cohere": "session-key"}
     _analyse(at, "[x](www.evil.example).local")
     assert [e.value for e in at.error] == [r"\[x\]\(`www.evil.example`\)\.local is a local name, not a public target\."]
+
+
+def test_keys_pasted_with_quotes_or_spaces_are_cleaned():
+    at = _session()
+    next(t for t in at.text_input if t.label.startswith("AbuseIPDB")).input(' "abc123" ')
+    next(b for b in at.button if b.label == "Save keys").click().run()
+    assert at.session_state["user_keys"]["abuseipdb"] == "abc123"

@@ -1126,3 +1126,15 @@ def test_unseen_ips_are_refused_and_seen_ones_allowed():
     assert t.unseen_ip("shodan_search", {"target": "8.8.8.8"}, "8.8.8.8", []) is None  # the target itself
     assert t.unseen_ip("shodan_search", {"target": "example.com"}, "x", []) is None  # domains aren't checked here
     assert t.unseen_ip("cve_search", {"search_term": "1.1.1.1"}, "x", []) is None
+
+
+def test_abuseipdb_errors_carry_its_own_explanation(monkeypatch):
+    class Resp:
+        status_code = 422
+
+        def json(self):
+            return {"errors": [{"detail": "The max age in days must be between 1 and 365.", "status": 422}]}
+
+    monkeypatch.setattr(t, "_http_get", lambda url, **k: Resp())
+    error = t.abuseipdb_check("8.8.8.8", t.ApiKeys(abuseipdb="k"))["error"]
+    assert error.startswith("AbuseIPDB returned HTTP 422") and "between 1 and 365" in error
