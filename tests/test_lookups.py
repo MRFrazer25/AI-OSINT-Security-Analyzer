@@ -1138,3 +1138,17 @@ def test_abuseipdb_errors_carry_its_own_explanation(monkeypatch):
     monkeypatch.setattr(t, "_http_get", lambda url, **k: Resp())
     error = t.abuseipdb_check("8.8.8.8", t.ApiKeys(abuseipdb="k"))["error"]
     assert error.startswith("AbuseIPDB returned HTTP 422") and "between 1 and 365" in error
+
+
+def test_a_shortened_affected_list_still_names_every_product(monkeypatch):
+    # Real case: Tomcat wasn't among the first 15 ranges of CVE-2023-44487, and a model called its match false.
+    matches = [{"vulnerable": True, "criteria": f"cpe:2.3:a:vendor{i}:product{i}:*:*:*:*:*:*:*:*"} for i in range(20)]
+    matches.append({"vulnerable": True, "criteria": "cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*",
+                    "versionEndIncluding": "9.0.80"})
+    cve = {"id": "CVE-2023-44487", "configurations": [{"nodes": [{"cpeMatch": matches}]}]}
+    monkeypatch.setattr(t, "_nvd_get", lambda url, params, keys: {"vulnerabilities": [{"cve": cve}]})
+    for name in ("kev_lookup_many", "epss_lookup_many", "exploit_lookup_many"):
+        monkeypatch.setattr(t, name, lambda ids: {})
+    r = t.nvd_lookup("CVE-2023-44487")
+    assert len(r["affected_products"]) == 15 and "apache:tomcat" in r["affected_product_names"]
+    assert r["affected_products_note"].startswith("Showing 15 of 21")

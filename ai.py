@@ -157,6 +157,9 @@ Rules:
 - Use each reputation source's threat_level as given (one engine flagging a target is LOW), and don't infer phishing or malice beyond what the sources say.
 - Recommend only what the target's owner can do. For a CDN edge IP or a large provider's public service (e.g. Google's DNS), don't suggest changing its ports or settings.
 - Use only CVE and advisory IDs that appear in tool results. When a list says "showing N of M", name the rest from its *_ids list or give a count; never fill in IDs.
+- A version check's AFFECTED match stands even when an nvd_lookup's affected_products doesn't show the product (that list can be shortened; see affected_product_names). Never call an AFFECTED CVE a false positive.
+- A Needs Review CVE whose description names a different product (e.g. "Nginx Proxy Manager" or "nginx ignition" when the target is nginx) is about that product: keep it under Needs Review, say which product it names, and never lead the summary with it.
+- When a key fact says a domain uses non-Latin letters, say in the Executive Summary that it may be a look-alike of another name and quote the decoded name from that fact. Don't search for fragments of the name.
 - For upgrade advice, use the version check's upgrade_to_at_least value exactly. Never recommend a lower version, and don't claim one version fixes everything unless that field says so.
 - A banner showing "401 Unauthorized" or a login prompt means the service requires authentication; don't call it unauthenticated.
 - Write version ranges in words ("before 1.21.0", "from 2.4.0 through 2.4.55"), not with < or > symbols.

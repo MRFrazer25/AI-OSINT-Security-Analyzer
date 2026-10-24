@@ -2257,13 +2257,25 @@ def nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limit: int
     cve = vulns[0].get("cve", {})
     summary = summarize_nvd_cve(cve, description_limit=2000, reference_limit=reference_limit)
 
-    affected = []
+    affected, names = [], []
     for config in cve.get("configurations", []) or []:
         for node in config.get("nodes", []) or []:
             for match in node.get("cpeMatch", []) or []:
                 if match.get("vulnerable"):
                     affected.append(_describe_range(match))
-    summary["affected_products"] = list(dict.fromkeys(affected))[: config_limit * 3]
+                    cpe = _parse_cpe(match.get("criteria", ""))
+                    names.append(f"{cpe['vendor']}:{cpe['product']}")
+    affected, names = list(dict.fromkeys(affected)), list(dict.fromkeys(names))
+    summary["affected_products"] = affected[: config_limit * 3]
+    if len(affected) > config_limit * 3:
+        # Real case: Tomcat wasn't among the first 15 ranges of CVE-2023-44487, so a model called the version
+        # check's Tomcat match a false positive. Every product name is listed, so the shortening can't mislead.
+        summary["affected_products_note"] = (f"Showing {config_limit * 3} of {len(affected)} affected ranges. "
+                                             "affected_product_names lists the affected products; one missing "
+                                             "from the ranges above may still be affected.")
+        summary["affected_product_names"] = names[:200]
+        if len(names) > 200:
+            summary["affected_product_names_shown"] = f"200 of {len(names)}"
     if summary.get("status") == "Rejected":
         summary["warning"] = "This CVE has been REJECTED and should not be treated as a real vulnerability."
 
