@@ -118,8 +118,9 @@ with st.sidebar:
 **Supported targets**
 - **IP address**: `8.8.8.8`, `2606:4700:4700::1111`
 - **Domain or URL**: `example.com`
-- **CVE ID**: `CVE-2021-44228`
-- **Software + version**: `nginx 1.20.1`, `OpenSSH 8.9p1`
+- **CVE ID**: `CVE-2026-111497`, `CVE-2024-4577`
+- **Software + version**: `PHP 8.3.10`, `nginx 1.30.0`, `Next.js 16.4.0`
+- **Distro package**: `OpenSSH 8.9p1 Ubuntu-3ubuntu0.6`
 
 Include a version for software. Without one, results are generic.
 
@@ -216,7 +217,7 @@ with st.form("analysis_form"):
     target_input = st.text_input(
         "Target",
         max_chars=253,
-        placeholder="IP address, domain, CVE ID, or software + version (e.g. 'Apache httpd 2.4.62')",
+        placeholder="IP address, domain, CVE ID, or software + version (e.g. 'PHP 8.3.10')",
     )
     depth_col, model_col = st.columns(2)
     complexity_level = depth_col.selectbox(

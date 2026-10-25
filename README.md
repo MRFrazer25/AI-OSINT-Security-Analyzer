@@ -27,8 +27,9 @@ An AI agent that checks IP addresses, domains, CVEs and software versions for **
 |---|---|
 | IP address (IPv4/IPv6, public only) | `8.8.8.8`, `2606:4700:4700::1111` |
 | Domain or URL | `example.com`, `https://example.com/page` |
-| CVE ID | `CVE-2021-44228` |
-| Software + version | `nginx 1.20.1`, `Apache httpd 2.4.62`, `OpenSSH 8.9p1` |
+| CVE ID | `CVE-2026-111497` (Brotli), `CVE-2024-4577` (PHP-CGI, in CISA KEV) |
+| Software + version | `PHP 8.3.10`, `nginx 1.30.0`, `Next.js 16.4.0`, `Brotli 1.1.0` |
+| Distro package (as a banner shows it) | `OpenSSH 8.9p1 Ubuntu-3ubuntu0.6`, `OpenSSH_9.2p1 Debian-2+deb12u3` |
 
 Private, loopback, link-local, CGNAT and other non-public addresses are rejected.
 
