@@ -175,7 +175,7 @@ How to work:
 - Don't re-fetch what a result already gave: version checks include each CVE's KEV status, EPSS, exploit flag and fix, so use nvd_lookup only for a CVE you have no record of, and cisa_kev_check once per product for its history. Stop when the report's questions are answered; unused budget is fine.
 
 ### What counts as confirmed
-- Confirmed: NVD version ranges matching this exact version (status AFFECTED), a GitHub advisory matched to this exact version (source "GitHub Advisory via OSV.dev": cite advisory_id, and say it isn't in NVD yet when cve_id is a GHSA ID), a distro STILL_AFFECTS_PACKAGE verdict (quote its package_fix), or the CVE being analysed. An AFFECTED match stands even when another tool's list doesn't show the product (lists can be shortened; nvd_lookup's affected_product_names lists them): never call it a false positive.
+- Confirmed: NVD version ranges matching this exact version (status AFFECTED), a package advisory matched to this exact version (source "GitHub Advisory via OSV.dev" or "PyPA Advisory via OSV.dev": cite advisory_id, and say it isn't in NVD yet when cve_id is a GHSA or PYSEC ID), a distro STILL_AFFECTS_PACKAGE verdict (quote its package_fix), or the CVE being analysed. An AFFECTED match stands even when another tool's list doesn't show the product (lists can be shortened; nvd_lookup's affected_product_names lists them): never call it a false positive.
 - Related (unconfirmed): product-level CISA KEV matches, keyword hits, vendor-level matches, and a no-version check's older_cves_in_cisa_kev. Say they don't prove this version is affected, but report them as exploitation history.
 - Keep to the target. A CVE whose description names a different product is about that product: another product line of the vendor (its server platform when the target is its camera), or a plugin, UI or manager built around the target (e.g. "Nginx Proxy Manager" or "nginx ignition" for nginx). Name the product it's about, keep it in its bucket or mention it as vendor history, and never lead the summary with it. Leave out keyword hits about unrelated products, or say in one line that the search found only unrelated products.
 - Needs Review: recent CVEs NVD hasn't analysed yet. List them, quote what their description says about versions (description_covers_this_version means the text names a range that includes this version), and say NVD hasn't confirmed them.
@@ -1228,7 +1228,8 @@ def build_markdown_export(data: Dict[str, Any]) -> str:
 # Report check: claims in the model's report that the tool data doesn't support (no model involved)
 # ---------------------------------------------------------------------------
 
-_REPORT_IDS = re.compile(r"\b(?:CVE-(?:1999|20\d{2})-\d{4,7}|GHSA(?:-[0-9a-z]{4}){3})\b", re.IGNORECASE)
+_REPORT_IDS = re.compile(r"\b(?:CVE-(?:1999|20\d{2})-\d{4,7}|GHSA(?:-[0-9a-z]{4}){3}|PYSEC-\d{4}-\d{1,6})\b",
+                         re.IGNORECASE)
 # A version where the report gives upgrade or range advice ("upgrade to 9.0.121", "fixed after 1.25.2").
 _REPORT_VERSIONS = re.compile(r"\b(?:versions?|upgrade|update|fixed|fix|before|after|through|until|from|to|patched)"
                               r"\b[^.\n%]{0,25}?\b(\d+(?:\.\d+)+[a-z0-9]*)\b(?!\.?\d|%)", re.IGNORECASE)

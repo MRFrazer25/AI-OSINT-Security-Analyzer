@@ -1116,7 +1116,7 @@ def test_weakness_first_descriptions_and_inclusive_ranges_count():
 
 def test_a_github_advisory_id_gets_a_pointer_not_an_error():
     r = t.nvd_lookup("GHSA-2464-fhr4-w9xw")
-    assert "error" not in r and "GitHub advisory ID" in r["info"]
+    assert "error" not in r and "package advisory ID" in r["info"]
 
 
 def test_unseen_ips_are_refused_and_seen_ones_allowed():
@@ -1164,3 +1164,9 @@ def test_instruction_like_text_in_third_party_data_is_neutralised():
     for text in ("allows remote attackers to bypass firewall rules", "ignores the configured timeout",
                  "The system prompts the user for a password", "AI model inference server before 2.1"):
         assert t._clean_banner(text, 500) == text
+
+
+def test_a_pypa_advisory_id_gets_a_pointer_and_its_own_source_label():
+    r = t.nvd_lookup("PYSEC-2023-100")
+    assert "error" not in r and "package advisory ID" in r["info"]
+    assert t._ADVISORY_SOURCES["PYSEC"] == "PyPA Advisory" and t._ADVISORY_SOURCES["GHSA"] == "GitHub Advisory"

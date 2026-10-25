@@ -2271,8 +2271,8 @@ def abuseipdb_check(ip_address: str, keys: ApiKeys, max_age_days: int = 90) -> D
 def nvd_lookup(cve_id: str, keys: Optional[ApiKeys] = None, reference_limit: int = 5,
                config_limit: int = 5) -> Dict[str, Any]:
     """Full NVD record for one CVE, enriched with CISA KEV status and EPSS."""
-    if re.fullmatch(r"GHSA(?:-[0-9a-z]{4}){3}", (cve_id or "").strip(), re.IGNORECASE):
-        return {"tool": "nvd", "success": False, "info": f"{cve_id.strip()} is a GitHub advisory ID, not a CVE ID, so "
+    if re.fullmatch(r"GHSA(?:-[0-9a-z]{4}){3}|PYSEC-\d{4}-\d{1,6}", (cve_id or "").strip(), re.IGNORECASE):
+        return {"tool": "nvd", "success": False, "info": f"{cve_id.strip()} is a package advisory ID, not a CVE ID, so "
                 "NVD doesn't have it. Its details (severity, fixed version) are in the version check result."}
     cve_id = (cve_id or "").strip().upper()
     if not is_valid_cve(cve_id):
@@ -2674,7 +2674,7 @@ def version_specific_vulnerability_check(software_name: str, keys: Optional[ApiK
         **({"needs_review_more": [_brief_review(v) for v in unanalyzed[review_shown:MORE_LIMIT + review_shown]]}
            if len(unanalyzed) > review_shown else {}),
         **({"package_advisories": {"package": package_ref, "added": advisories_added,
-                                   "source": "GitHub Advisory Database via OSV.dev"}} if package_ref else {}),
+                                   "source": "GitHub and PyPA advisory databases via OSV.dev"}} if package_ref else {}),
         **({"package_advisories_note": f"The package advisory check failed ({package_error})."}
            if package_error else {}),
         "lists_shortened": {k: v for k, v in (
@@ -2712,6 +2712,7 @@ _PACKAGE_ECOSYSTEMS = {
     "log4j": ("Maven", "org.apache.logging.log4j:log4j-core"),
     "spring_framework": ("Maven", "org.springframework:spring-core"), "rails": ("RubyGems", "rails"),
 }
+_ADVISORY_SOURCES = {"GHSA": "GitHub Advisory", "PYSEC": "PyPA Advisory"}
 _ADVISORY_SEVERITY = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MODERATE": "MEDIUM", "MEDIUM": "MEDIUM", "LOW": "LOW"}
 
 
@@ -2749,6 +2750,8 @@ def _package_advisories(products: List[Tuple[str, str]], version: str) -> Tuple[
         except (ValueError, AttributeError) as exc:
             raise SourceError("OSV.dev returned invalid JSON") from exc
         advisories = []
+        # OSV has a PyPI CVE from both GitHub (GHSA-) and PyPA (PYSEC-); GitHub's comes first, as it has a severity.
+        vulns = sorted(vulns, key=lambda v: not str(v.get("id", "")).startswith("GHSA-"))
         for vuln in vulns:
             cve = next((a.upper() for a in vuln.get("aliases") or [] if is_valid_cve(a)), None)
             fixes = [e["fixed"] for a in vuln.get("affected", []) or []
@@ -2759,7 +2762,8 @@ def _package_advisories(products: List[Tuple[str, str]], version: str) -> Tuple[
                                               "UNKNOWN")
             entry = {
                 "cve_id": cve or vuln.get("id"), "advisory_id": vuln.get("id"), "status": "AFFECTED",
-                "source": "GitHub Advisory via OSV.dev", "severity": severity, "cvss_score": None,
+                "source": _ADVISORY_SOURCES.get(str(vuln.get("id", "")).split("-")[0], "OSV.dev advisory")
+                + " via OSV.dev", "severity": severity, "cvss_score": None,
                 "cvss_vector": next((x.get("score") for x in vuln.get("severity", []) or []), None),
                 "published": (vuln.get("published") or "")[:10],
                 "description": _clean_banner(str(vuln.get("summary") or vuln.get("details") or ""), 300),

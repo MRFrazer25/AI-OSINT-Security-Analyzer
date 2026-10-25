@@ -51,7 +51,7 @@ Private, loopback, link-local, CGNAT and other non-public addresses are rejected
 | [Shodan InternetDB](https://internetdb.shodan.io/), [Shodan CVEDB](https://cvedb.shodan.io/) | Ports and software without a Shodan key; CVE details when NVD is down | Not needed (free for non-commercial use) | n/a |
 | [SANS ISC](https://isc.sans.edu/) (DShield) | Attack reports for an IP when GreyNoise can't answer | Not needed (data is CC BY-NC-SA 4.0, non-commercial) | n/a |
 | [Exploit-DB](https://www.exploit-db.com/) | Whether exploit code is published for a CVE | Not needed (index downloaded at most once a day; GPL-2.0-or-later) | n/a |
-| [GitHub Advisory Database](https://github.com/advisories) via OSV.dev | Advisories for packages such as Next.js, React and Django before NVD has them | Not needed (data is [CC BY 4.0](https://github.com/github/advisory-database#license)) | n/a |
+| [GitHub Advisory Database](https://github.com/advisories) and the [PyPA Advisory Database](https://github.com/pypa/advisory-database) via OSV.dev | Advisories for packages such as Next.js, React and Django before NVD has them | Not needed (data is [CC BY 4.0](https://github.com/github/advisory-database#license)) | n/a |
 
 All of these offer free tiers. Check each provider for its current limits. Free tiers that matter here:
 
@@ -63,7 +63,7 @@ All of these offer free tiers. Check each provider for its current limits. Free 
 
 This product uses data from the NVD API but is not endorsed or certified by the NVD.
 
-Spamhaus DROP data is (c) The Spamhaus Project. Package advisories are from the GitHub Advisory Database (CC BY 4.0) and Ubuntu's security notices (CC BY-SA 4.0, (c) Canonical), both via OSV.dev; SANS ISC data is CC BY-NC-SA 4.0. CVE® is a registered trademark of The MITRE Corporation.
+Spamhaus DROP data is (c) The Spamhaus Project. Package advisories are from the GitHub Advisory Database (CC BY 4.0), the PyPA Advisory Database (CC BY 4.0) and Ubuntu's security notices (CC BY-SA 4.0, (c) Canonical), all via OSV.dev; SANS ISC data is CC BY-NC-SA 4.0. CVE® is a registered trademark of The MITRE Corporation.
 
 This is an independent project, not affiliated with, endorsed by or sponsored by Cohere, Shodan, VirusTotal (Google), AbuseIPDB, NIST, CISA, FIRST, MITRE, Spamhaus, GreyNoise, SANS, OffSec (Exploit-DB), GitHub, Google (OSV.dev), Sectigo (crt.sh), SSLMate (Cert Spotter) or the internet registries. Their names are used only to say which services it works with.
 
