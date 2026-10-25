@@ -69,11 +69,13 @@ This is an independent project, not affiliated with, endorsed by or sponsored by
 
 ## Running locally
 
-Requires Python 3.11+.
+Requires Python 3.11+. Or skip setup and use the live demo linked at the top.
 
 ```bash
 git clone https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer.git
 cd ai-vulnerability-exposure-analyzer
+python -m venv .venv
+.venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
 python setup_check.py
 ```
 
@@ -114,7 +116,8 @@ The tests run offline. They cover target validation, version comparison (includi
 2. **Baseline lookups (in code):** for IPs and domains, DNS, Shodan, VirusTotal, AbuseIPDB, the registry owner and the Spamhaus/GreyNoise threat lists always run before the AI starts, so core coverage never depends on the model. The keyless owner and threat-list lookups don't count against the tool budget. Shodan results are automatically checked against CISA KEV, including products named only in service banners.
 3. **Investigate:** the agent chooses further tools (NVD version check, distro patch check, NVD lookup, CISA KEV, keyword search, subdomains). Duplicate calls are served from cache, and quota-limited services are capped per run. Keyword searches keep only CVEs that mention the term as a whole word.
 4. **Verify versions:** for each product and version, CVEs come from NVD's CPE match API and are then re-checked locally against each affected range. The minimum safe version is computed from the range ends. When a banner names an Ubuntu or Debian package, the distro's data overrides NVD's verdict for CVEs it has already fixed.
-5. **Report:** code builds the Key facts. The model writes an executive summary, a key-findings table, details (Confirmed / Related / Needs Review / Ruled Out), prioritised recommendations and limitations, citing a source for every claim.
+5. **Report:** code builds the Key facts and the table and chart of confirmed CVEs. The model writes an executive summary, a key-findings table, details (Confirmed / Related / Needs Review / Ruled Out), prioritised recommendations and limitations, citing a source for every claim.
+6. **Check:** code compares the report with the data and shows a warning for anything it doesn't support, such as a CVE ID no lookup returned (looked up in NVD to tell a real one from a wrong one), a misquoted fix version, an unconfirmed CVE filed as confirmed, or an exploit claim the data doesn't back.
 
 ## Security and privacy
 
