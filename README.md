@@ -2,11 +2,13 @@
 
 An AI agent that checks IP addresses, domains, CVEs and software versions for **confirmed vulnerabilities and exposure** across several threat-intelligence sources, then writes an evidence-based security assessment. Cohere's Command A+ model decides which tools to run, and every finding in the report is tied back to the source that produced it.
 
-**Live demo:** [osint-ai.streamlit.app](https://osint-ai.streamlit.app)
+**Live demo:** [ai-vulnerability-exposure-analyzer.streamlit.app](https://ai-vulnerability-exposure-analyzer.streamlit.app)
 
 **Also available as an MCP server:** [vulnerability-exposure-mcp](https://github.com/MRFrazer25/vulnerability-exposure-mcp) runs the same checks inside Claude, Cursor and other MCP clients, with no Cohere key needed.
 
-![Security report for scanme.nmap.org, showing the key facts box, CISA KEV matches and the AI executive summary](docs/screenshot.png)
+![Security report for scanme.nmap.org: tool-call counts and the key facts box, computed from the data sources, with DNS, reputation, open ports, confirmed CVEs, exploits and CISA KEV matches](docs/report.png)
+
+![Severity chart and table of the 121 confirmed CVEs for Apache httpd 2.4.7, sorted by CISA KEV, EPSS and CVSS, with fix versions and published exploits](docs/cve-table.png)
 
 ## Features
 

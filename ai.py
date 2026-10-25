@@ -1342,6 +1342,13 @@ def _unconfirmed_in_confirmed(report: str, confirmed: set, known: set) -> List[s
                    for m in _REPORT_IDS.findall(line) if m.upper() not in confirmed and m.upper() in known})
 
 
+def _quote(sentence: str, limit: int = 80) -> str:
+    """A flagged sentence as plain text, without Markdown or a list marker, cut to ``limit`` characters."""
+    text = re.sub(r"[*_`]+", "", " ".join(sentence.split()))
+    text = re.sub(r"^(?:[-+]|\d+[.)])\s+", "", text)
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "\u2026"
+
+
 def _wrong_exploit_claims(report: str, exploits: Dict[str, Any], known: set) -> List[str]:
     """A public exploit (or a verified one) credited to a CVE the data has none (or no verified one) for."""
     wrong = set()
@@ -1351,7 +1358,7 @@ def _wrong_exploit_claims(report: str, exploits: Dict[str, Any], known: set) -> 
         if len(ids) != 1 or not claim or re.search(r"\b(?:no|not|without|none)\b[^.\n]{0,25}$",
                                                    sentence[:claim.start()], re.IGNORECASE):
             continue
-        cve, quoted = ids.pop(), " ".join(sentence.split())[:80]
+        cve, quoted = ids.pop(), _quote(sentence)
         if cve not in exploits:
             wrong.add(f"{cve} has no public exploit in the data (\"{quoted}\")")
         elif (re.search(r"\bverified\b", sentence, re.IGNORECASE)
@@ -1380,7 +1387,7 @@ def _all_fixed_too_low(report: str, confirmed: set, fixes: Dict[str, Any], sever
             order = compare_versions(named.group(1), fix)
             if order < 0 or (kind == "after" and order == 0):
                 wrong.add(f"not all fixed in {named.group(1)}: {cve} is fixed {kind} {fix} "
-                          f"(\"{' '.join(sentence.split())[:80]}\")")
+                          f"(\"{_quote(sentence)}\")")
                 break
     return sorted(wrong)
 
