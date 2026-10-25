@@ -8,6 +8,8 @@ python-dotenv==1.2.4
 pillow==13.0.0
 # Pulled in by cohere and shodan; pinned for its security fixes
 filelock==4.2.1
+# requests' CA bundle; 2026.10.19 drops the revoked eMudhra/emSign certificates (https://discuss.python.org/t/109576)
+certifi==2026.10.19
 # Charts (installed with Streamlit; pinned because the app imports them)
 altair==6.3.0
 pandas==3.0.6
