@@ -1,5 +1,9 @@
 # Vulnerability Exposure Analyzer
 
+[![Tests](https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer/actions/workflows/tests.yml/badge.svg)](https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer/blob/main/LICENSE)
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://vulnerability-exposure-analyzer.streamlit.app)
+
 An AI agent that checks IP addresses, domains, CVEs and software versions for **confirmed vulnerabilities and exposure** across several threat-intelligence sources, then writes an evidence-based security assessment. Cohere's Command A+ model decides which tools to run, and every finding in the report is tied back to the source that produced it.
 
 **Live demo:** [vulnerability-exposure-analyzer.streamlit.app](https://vulnerability-exposure-analyzer.streamlit.app)
