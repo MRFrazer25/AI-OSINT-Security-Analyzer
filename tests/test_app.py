@@ -1,6 +1,6 @@
-import json
 """Smoke tests for the Streamlit UI (no network or API keys needed)."""
 
+import json
 from pathlib import Path
 
 import pytest
