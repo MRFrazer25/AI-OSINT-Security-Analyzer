@@ -339,8 +339,11 @@ if data:
             "In CISA KEV": st.column_config.CheckboxColumn(help="Known to be exploited in the wild"),
             "Exploit published": st.column_config.CheckboxColumn(help="Exploit code is on Exploit-DB"),
         })
+        fixed = cve_table.get("fixed_by_distro")
         st.caption(f"Showing {len(cve_table['rows'])} of {cve_table['total']} confirmed CVEs, most urgent first "
-                   "(in CISA KEV, then EPSS, then CVSS). Click a CVE to open it on NVD, or a column heading to sort; on a "
+                   "(in CISA KEV, then EPSS, then CVSS)"
+                   + (f"; {fixed} more that the distro has already fixed by a backport are left out" if fixed else "")
+                   + ". Click a CVE to open it on NVD, or a column heading to sort; on a "
                    "phone, swipe the table sideways for more columns.")
 
     st.markdown("**AI assessment**")

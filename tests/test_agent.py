@@ -526,8 +526,10 @@ def test_cve_table_lists_confirmed_cves_most_urgent_first():
     first = table["rows"][0]
     assert (first["EPSS %"], first["In CISA KEV"], first["Exploit published"], first["Fixed in"]) == (
         99.99, True, True, "after 1.25.2")
-    assert table["total"] == 12 and table["by_severity"] == {"HIGH": 2, "MEDIUM": 10}
-    assert ai.build_cve_table({"summary": {}, "tool_calls": []}) == {"rows": [], "total": 0, "by_severity": {}}
+    # The CVE the distro fixed comes off the total and the chart too, not only the table rows.
+    assert table["total"] == 11 and table["fixed_by_distro"] == 1 and table["by_severity"] == {"HIGH": 1, "MEDIUM": 10}
+    assert ai.build_cve_table({"summary": {}, "tool_calls": []}) == {"rows": [], "total": 0, "fixed_by_distro": 0,
+                                                                      "by_severity": {}}
 
 
 def test_a_look_alike_domain_gets_a_key_fact():

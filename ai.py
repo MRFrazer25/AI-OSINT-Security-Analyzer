@@ -1164,7 +1164,7 @@ def build_cve_table(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     backported = set(data.get("summary", {}).get("fixed_by_distro_backport") or [])
     rows: Dict[str, Dict[str, Any]] = {}
-    total, by_severity = 0, defaultdict(int)
+    total, by_severity, fixed_by_distro = 0, defaultdict(int), set()
     for call in data.get("tool_calls", []):
         r = call.get("result") or {}
         if r.get("tool") != "version_check" or not r.get("success") or not r.get("version"):
@@ -1179,6 +1179,12 @@ def build_cve_table(data: Dict[str, Any]) -> Dict[str, Any]:
                  for v in r.get("affected_cves_more") or []]
         for v in (r.get("affected_cves") or []) + brief:
             cve_id = str(v.get("cve_id") or "").strip().upper()
+            if cve_id in backported and cve_id not in fixed_by_distro:
+                # The distro fixed it, so it comes off the chart and the total as well as the table.
+                fixed_by_distro.add(cve_id)
+                total -= 1
+                if str(v.get("severity") or "").upper() in by_severity:
+                    by_severity[str(v["severity"]).upper()] -= 1
             if not cve_id or not is_valid_cve(cve_id) or cve_id in backported or cve_id in rows:
                 continue
             epss = (v.get("epss") or {}).get("epss")
@@ -1195,8 +1201,8 @@ def build_cve_table(data: Dict[str, Any]) -> Dict[str, Any]:
             }
     ordered = sorted(rows.values(), reverse=True,
                      key=lambda x: (x["In CISA KEV"], x["EPSS %"] or 0.0, x["CVSS"] or 0.0))
-    return {"rows": ordered, "total": total,
-            "by_severity": {s: by_severity[s] for s in SEVERITY_ORDER if by_severity.get(s)}}
+    return {"rows": ordered, "total": total, "fixed_by_distro": len(fixed_by_distro),
+            "by_severity": {s: by_severity[s] for s in SEVERITY_ORDER if by_severity.get(s, 0) > 0}}
 
 
 def build_markdown_export(data: Dict[str, Any]) -> str:
