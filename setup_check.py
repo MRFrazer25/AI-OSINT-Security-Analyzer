@@ -65,7 +65,7 @@ def ensure_env_file() -> None:
 
 
 def main() -> None:
-    print("AI Vulnerability Exposure Analyzer setup\n" + "=" * 40)
+    print("Vulnerability Exposure Analyzer setup\n" + "=" * 40)
     if not check_python_version() or not install_requirements() or not verify_imports():
         sys.exit(1)
     ensure_env_file()

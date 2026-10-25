@@ -1,4 +1,4 @@
-"""Streamlit front end for the AI Vulnerability Exposure Analyzer."""
+"""Streamlit front end for the Vulnerability Exposure Analyzer."""
 
 import json
 import logging
@@ -104,13 +104,13 @@ def describe_args(arguments) -> str:
         return ""
 
 
-st.set_page_config(page_title="AI Vulnerability Exposure Analyzer", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="Vulnerability Exposure Analyzer", page_icon="🔍", layout="wide")
 
 st.session_state.setdefault("user_keys", {})
 st.session_state.setdefault("report_data", None)
 st.session_state.setdefault("last_run", 0.0)
 
-st.title("AI Vulnerability Exposure Analyzer")
+st.title("Vulnerability Exposure Analyzer")
 st.markdown("AI-driven checks of IPs, domains, CVEs and software versions for confirmed vulnerabilities and "
             "exposure, powered by Cohere Command models.")
 
@@ -384,6 +384,6 @@ st.caption(
     "can be wrong. Verify before acting.  \n"
     "Testing so far has focused on common software and devices, so results for less common products may be "
     "less reliable. If a result looks wrong, please "
-    "[open an issue](https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer/issues) with the target "
+    "[open an issue](https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer/issues) with the target "
     "you used."
 )

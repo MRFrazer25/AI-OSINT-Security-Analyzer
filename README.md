@@ -1,10 +1,10 @@
-# AI Vulnerability Exposure Analyzer
+# Vulnerability Exposure Analyzer
 
 An AI agent that checks IP addresses, domains, CVEs and software versions for **confirmed vulnerabilities and exposure** across several threat-intelligence sources, then writes an evidence-based security assessment. Cohere's Command A+ model decides which tools to run, and every finding in the report is tied back to the source that produced it.
 
-**Live demo:** [ai-vulnerability-exposure-analyzer.streamlit.app](https://ai-vulnerability-exposure-analyzer.streamlit.app)
+**Live demo:** [vulnerability-exposure-analyzer.streamlit.app](https://vulnerability-exposure-analyzer.streamlit.app)
 
-**Also available as an MCP server:** [vulnerability-exposure-mcp](https://github.com/MRFrazer25/vulnerability-exposure-mcp) runs the same checks inside Claude, Cursor and other MCP clients, with no Cohere key needed.
+**Also available as an MCP server:** [Vulnerability Exposure MCP](https://github.com/MRFrazer25/Vulnerability-Exposure-MCP) runs the same checks inside Claude, Cursor and other MCP clients, with no Cohere key needed.
 
 ![Security report for scanme.nmap.org: tool-call counts and the key facts box, computed from the data sources, with DNS, reputation, open ports, confirmed CVEs, exploits and CISA KEV matches](docs/report.png)
 
@@ -74,8 +74,8 @@ This is an independent project, not affiliated with, endorsed by or sponsored by
 Requires Python 3.11+. Or skip setup and use the live demo linked at the top.
 
 ```bash
-git clone https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer.git
-cd ai-vulnerability-exposure-analyzer
+git clone https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer.git
+cd Vulnerability-Exposure-Analyzer
 python -m venv .venv
 .venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
 python setup_check.py
@@ -91,7 +91,7 @@ Open http://localhost:8501.
 
 ### Choosing a Cohere model
 
-**Why Cohere?** Cohere's free trial keys let anyone try the app without paying, and its Command A models are built for the multi-step tool use this agent depends on. To use the same checks with Claude, Cursor or another AI client, see the [MCP server](https://github.com/MRFrazer25/vulnerability-exposure-mcp).
+**Why Cohere?** Cohere's free trial keys let anyone try the app without paying, and its Command A models are built for the multi-step tool use this agent depends on. To use the same checks with Claude, Cursor or another AI client, see the [MCP server](https://github.com/MRFrazer25/Vulnerability-Exposure-MCP).
 
 Pick the model in the app, next to "Analysis depth". Only models that support tool use are offered:
 
@@ -139,7 +139,7 @@ Exported reports can contain sensitive findings. Handle them accordingly.
 * Banner versions can mislead. Linux distributions often backport security fixes without changing the version string. The distro patch check handles Ubuntu and Debian packages whose banner includes the package version (mainly OpenSSH); for others, such as Apache or nginx on Ubuntu and anything on Red Hat, verify findings against your distribution's security tracker.
 * "No known vulnerabilities" means no matching NVD records, not that a system is secure.
 * A product-level CISA KEV match shows that the product has been exploited before, not that the target's version is affected.
-* Testing so far has focused on common software and devices, so results for less common products may be less reliable. If a result looks wrong, please [open an issue](https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer/issues) with the target you used.
+* Testing so far has focused on common software and devices, so results for less common products may be less reliable. If a result looks wrong, please [open an issue](https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer/issues) with the target you used.
 
 ## License
 

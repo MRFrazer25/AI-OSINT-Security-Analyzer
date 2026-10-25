@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 HTTP_TIMEOUT = 20
 MAX_REDIRECTS = 3
 MAX_RESPONSE_BYTES = 64 * 2**20  # the largest real one, Exploit-DB's CSV, is about 10 MB
-USER_AGENT = "ai-vulnerability-exposure-analyzer/2.0 (+https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer)"
+USER_AGENT = "vulnerability-exposure-analyzer/2.0 (+https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer)"
 MAX_TARGET_LENGTH = 253
 MAX_VERSION_LENGTH = 40  # real versions are far shorter
 

@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-vulnerability-exposure-analyzer"
+name = "vulnerability-exposure-analyzer"
 version = "2.0.0"
 authors = [{ name = "Matthew Frazer" }]
 description = "AI-driven analysis of IPs, domains, CVEs and software versions for confirmed vulnerabilities and exposure"
@@ -35,9 +35,9 @@ dependencies = [
 dev = ["pytest==9.1.1", "ruff==0.17.1"]
 
 [project.urls]
-Homepage = "https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer"
-Repository = "https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer"
-Issues = "https://github.com/MRFrazer25/ai-vulnerability-exposure-analyzer/issues"
+Homepage = "https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer"
+Repository = "https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer"
+Issues = "https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer/issues"
 
 [tool.setuptools]
 py-modules = ["ai", "lookups", "app"]

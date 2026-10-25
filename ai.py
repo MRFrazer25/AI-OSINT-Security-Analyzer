@@ -651,7 +651,7 @@ def run_agent(target_input: str, api_keys: ApiKeys, complexity_level: str = "Sta
             result.report = f"**Error:** {result.error}"
             return result
         client = cohere.ClientV2(api_key=api_keys.cohere, timeout=120,
-                                 client_name="ai-vulnerability-exposure-analyzer")
+                                 client_name="vulnerability-exposure-analyzer")
 
     runner = _ToolRunner(api_keys, profile, target.value)
     baseline = _run_baseline(target, runner, emit)
@@ -1116,7 +1116,7 @@ def build_report_data(result: AgentResult, include_facts: bool = True) -> Dict[s
             "target_type": result.target.type,
             "complexity": result.complexity,
             "model": result.model,
-            "generated_by": "AI Vulnerability Exposure Analyzer",
+            "generated_by": "Vulnerability Exposure Analyzer",
         },
         "key_facts": build_key_facts(result) if include_facts else [],
         "report_markdown": result.report,
@@ -1214,7 +1214,7 @@ def build_markdown_export(data: Dict[str, Any]) -> str:
     meta, summary = data["metadata"], data["summary"]
     facts = data.get("key_facts") or []
     return (
-        f"# AI Vulnerability Exposure Report: {escape_markdown(meta['target'])}\n\n"
+        f"# Vulnerability Exposure Report: {escape_markdown(meta['target'])}\n\n"
         f"- Target type: {meta['target_type']}\n- Depth: {escape_markdown(meta['complexity'])}\n"
         f"- Generated: {escape_markdown(meta['generated_at'])}\n- Model: {escape_markdown(meta['model'])}\n\n"
         "## Key Facts (computed from the data sources)\n\n"
