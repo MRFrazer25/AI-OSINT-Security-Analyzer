@@ -8,5 +8,6 @@ python-dotenv==1.2.4
 pillow==13.0.0
 # Pulled in by cohere and shodan; pinned for its security fixes
 filelock==4.2.1
-# Charts (installed with Streamlit; pinned because the app imports it)
+# Charts (installed with Streamlit; pinned because the app imports them)
 altair==6.3.0
+pandas==3.0.6

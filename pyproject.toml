@@ -28,6 +28,7 @@ dependencies = [
     "pillow==13.0.0",  # Streamlit dependency, pinned for its security fixes
     "filelock==4.2.1",  # cohere and shodan dependency, pinned for its security fixes
     "altair==6.3.0",  # Streamlit dependency, imported directly for the severity chart
+    "pandas==3.0.6",  # Streamlit dependency, the severity chart's data
 ]
 
 [project.optional-dependencies]

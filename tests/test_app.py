@@ -1,3 +1,4 @@
+import json
 """Smoke tests for the Streamlit UI (no network or API keys needed)."""
 
 from pathlib import Path
@@ -151,3 +152,10 @@ def test_keys_pasted_with_quotes_or_spaces_are_cleaned():
     next(t for t in at.text_input if t.label.startswith("AbuseIPDB")).input(' "abc123" ')
     next(b for b in at.button if b.label == "Save keys").click().run()
     assert at.session_state["user_keys"]["abuseipdb"] == "abc123"
+
+
+def test_the_severity_chart_sends_its_numbers_as_a_dataset():
+    # Streamlit only redraws a chart's data when it is a dataset; inline values kept the first report's bars.
+    import app
+    spec = app.severity_chart({"CRITICAL": 3, "HIGH": 8}).to_dict()
+    assert spec.get("datasets") and "values" not in json.dumps(spec.get("data", {}))

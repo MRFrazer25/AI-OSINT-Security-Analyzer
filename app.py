@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 
 import altair as alt
+import pandas as pd
 import streamlit as st
 
 try:  # before importing ai, so COHERE_MODEL in .env sets the default model (API keys are never read from it)
@@ -66,7 +67,9 @@ def severity_chart(counts: dict) -> alt.Chart:
     """Horizontal bars, one per severity, so the labels stay readable on a narrow phone screen."""
     rows = [{"Severity": s.title(), "CVEs": n} for s, n in counts.items()]
     order = [s for s in SEVERITY_COLORS if s.upper() in counts]
-    base = alt.Chart(alt.Data(values=rows)).encode(
+    # A DataFrame, not inline values: Streamlit only redraws a chart's data when it comes as a dataset, so inline
+    # values kept showing the first report's bars on every later report.
+    base = alt.Chart(pd.DataFrame(rows)).encode(
         y=alt.Y("Severity:N", sort=order, title=None),
         x=alt.X("CVEs:Q", title="Confirmed CVEs", axis=alt.Axis(tickMinStep=1)),
         tooltip=["Severity:N", "CVEs:Q"])
