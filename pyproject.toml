@@ -21,19 +21,19 @@ classifiers = [
 keywords = ["osint", "security", "threat-intelligence", "vulnerability", "cve", "ai-agent", "cohere", "streamlit"]
 dependencies = [
     "streamlit==1.66.1",
-    "cohere==7.2.0",
+    "cohere==7.3.0",
     "shodan==1.31.0",
     "requests==2.34.2",
     "python-dotenv==1.2.4",
     "pillow==13.0.0",  # Streamlit dependency, pinned for its security fixes
-    "filelock==4.2.1",  # cohere and shodan dependency, pinned for its security fixes
-    "certifi==2026.10.19",  # requests' CA bundle, without the revoked eMudhra/emSign certificates
+    "filelock==4.2.4",  # cohere and shodan dependency, pinned for its security fixes
+    "certifi==2026.10.23",  # requests' CA bundle, without the revoked eMudhra/emSign certificates
     "altair==6.3.0",  # Streamlit dependency, imported directly for the severity chart
-    "pandas==3.0.6",  # Streamlit dependency, the severity chart's data
+    "pandas==3.1.0",  # Streamlit dependency, the severity chart's data
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1", "ruff==0.17.1"]
+dev = ["pytest==9.1.1", "ruff==0.17.2"]
 
 [project.urls]
 Homepage = "https://github.com/MRFrazer25/Vulnerability-Exposure-Analyzer"

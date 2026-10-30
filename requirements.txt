@@ -1,15 +1,15 @@
 # Exact versions. Dependabot proposes updates weekly, once a release is 7 days old (.github/dependabot.yml).
 streamlit==1.66.1
-cohere==7.2.0
+cohere==7.3.0
 shodan==1.31.0
 requests==2.34.2
 python-dotenv==1.2.4
 # Pulled in by Streamlit; pinned so the fix for CVE-2026-96636, CVE-2026-96644 and CVE-2026-96778 is used.
 pillow==13.0.0
 # Pulled in by cohere and shodan; pinned for its security fixes
-filelock==4.2.1
+filelock==4.2.4
 # requests' CA bundle; 2026.10.19 drops the revoked eMudhra/emSign certificates (https://discuss.python.org/t/109576)
-certifi==2026.10.19
+certifi==2026.10.23
 # Charts (installed with Streamlit; pinned because the app imports them)
 altair==6.3.0
-pandas==3.0.6
+pandas==3.1.0
